@@ -965,23 +965,45 @@ Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     readme_content += f"""
 ## Quick Start Instructions
 
+### Method 1: Complete Setup (Recommended)
 1. **Extract all files** to your deployment directory
-2. **Make init scripts executable**: `chmod +x init-*.sh`
-3. **Run nodes individually**:
-"""
+2. **Run system initialization** (one-time setup):
+   ```bash
+   chmod +x init.sh
+   ./init.sh
+   ```
+   This sets up Docker, system limits, permissions, and volumes.
+
+3. **Start individual nodes**:
+   ```bash
+   chmod +x run-*.sh"""
     
     for node in nodes:
-        readme_content += f"   - `./init-{node['name']}.sh`\n"
+        readme_content += f"""
+   ./run-{node['name']}.sh"""
     
     readme_content += f"""
-4. **Or start all nodes together**:
-   ```bash
-   # Start all nodes
-   for script in init-*.sh; do
-       ./$script &
-   done
    ```
 
+### Method 2: Legacy Approach
+1. **Extract all files** to your deployment directory
+2. **Make init scripts executable**: `chmod +x init-*.sh`
+3. **Run legacy init scripts**:"""
+    
+    for node in nodes:
+        readme_content += f"""
+   - `./init-{node['name']}.sh`"""
+    
+    readme_content += f"""
+
+### Method 3: Manual Docker Compose
+```bash
+# Start all nodes manually
+{' && '.join([f'docker-compose -f docker-compose-{node["name"]}.yml up -d' for node in nodes])}
+```
+"""
+    
+    readme_content += """
 ## Files Included
 """
     
@@ -991,17 +1013,33 @@ Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         compose_file = generate_individual_docker_compose(node, config)
         cluster_files[f"docker-compose-{node['name']}.yml"] = compose_file
         
-        # Individual init script
+        # Individual init script (legacy - for backwards compatibility)
         init_script = generate_init_script(node, config)
         cluster_files[f"init-{node['name']}.sh"] = init_script
+        
+        # System initialization script (comprehensive setup)
+        system_init_script = generate_system_init_script(node, config)
+        cluster_files[f"init.sh"] = system_init_script
+        
+        # Node-specific run script
+        run_script = generate_node_run_script(node, config)
+        cluster_files[f"run-{node['name']}.sh"] = run_script
         
         readme_content += f"""
 ### {node['name']} Files:
 - `docker-compose-{node['name']}.yml` - Complete Docker Compose configuration
-- `init-{node['name']}.sh` - Initialization script
+- `init-{node['name']}.sh` - Basic initialization script (legacy)
+- `run-{node['name']}.sh` - Node-specific run script with health checks
 """
     
+    # Add system-wide scripts
     readme_content += f"""
+### System-wide Scripts:
+- `init.sh` - Comprehensive system initialization (Docker, permissions, limits)
+- `run-<node>.sh` - Individual node run scripts with validation
+"""
+    
+    readme_content += """
 ## Management Commands
 
 ### Check cluster health:
@@ -1045,6 +1083,568 @@ done
     cluster_files["README.md"] = readme_content
     
     return cluster_files
+
+def generate_system_init_script(node, config):
+    """Generate system initialization script for Docker setup, volumes, and permissions"""
+    cluster_name = config['cluster_name']
+    
+    script_content = f"""#!/bin/bash
+# System Initialization Script for Elasticsearch Node: {node['name']}
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Cluster: {cluster_name} | Node: {node['name']} | Roles: {', '.join(node['roles'])}
+
+set -e
+
+echo "🚀 System Initialization for Elasticsearch Node: {node['name']}"
+echo "📊 Cluster: {cluster_name}"
+echo "🎭 Roles: {', '.join(node['roles'])}"
+echo "💻 Hardware: {node['cpu_cores']} cores, {node['ram_gb']}GB RAM"
+echo "🌐 Network: {node['ip']}:{node['http_port']}"
+echo "==============================================="
+
+# Function to check if command exists
+command_exists() {{
+    command -v "$1" >/dev/null 2>&1
+}}
+
+# Check if running as root for system modifications
+if [[ $EUID -eq 0 ]]; then
+    echo "⚠️  Running as root - will modify system settings"
+    ROOT_USER=true
+else
+    echo "ℹ️  Running as non-root user"
+    ROOT_USER=false
+fi
+
+# ==================== DOCKER INSTALLATION ====================
+echo "🐳 Checking Docker installation..."
+
+if ! command_exists docker; then
+    echo "❌ Docker not found. Installing Docker..."
+    
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Linux installation
+        if command_exists apt-get; then
+            # Ubuntu/Debian
+            sudo apt-get update
+            sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            sudo apt-get update
+            sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        elif command_exists yum; then
+            # CentOS/RHEL
+            sudo yum install -y yum-utils
+            sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+            sudo yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        elif command_exists dnf; then
+            # Fedora
+            sudo dnf -y install dnf-plugins-core
+            sudo dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
+            sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        else
+            echo "❌ Unsupported Linux distribution. Please install Docker manually."
+            exit 1
+        fi
+        
+        # Start and enable Docker
+        sudo systemctl start docker
+        sudo systemctl enable docker
+        
+        # Add current user to docker group
+        if [[ "$ROOT_USER" == "false" ]]; then
+            sudo usermod -aG docker $USER
+            echo "⚠️  User added to docker group. Please log out and log back in, or run 'newgrp docker'"
+        fi
+        
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "❌ macOS detected. Please install Docker Desktop manually from https://docker.com/products/docker-desktop"
+        exit 1
+    else
+        echo "❌ Unsupported operating system. Please install Docker manually."
+        exit 1
+    fi
+else
+    echo "✅ Docker is already installed"
+fi
+
+# Check if Docker is running
+if ! docker info > /dev/null 2>&1; then
+    echo "🔄 Starting Docker service..."
+    if [[ "$ROOT_USER" == "true" ]]; then
+        systemctl start docker || service docker start
+    else
+        sudo systemctl start docker || sudo service docker start
+    fi
+    
+    # Wait for Docker to be ready
+    echo "⏳ Waiting for Docker to be ready..."
+    for i in {{1..30}}; do
+        if docker info > /dev/null 2>&1; then
+            echo "✅ Docker is ready!"
+            break
+        fi
+        echo "⏳ Waiting... ($i/30)"
+        sleep 2
+    done
+    
+    if ! docker info > /dev/null 2>&1; then
+        echo "❌ Docker failed to start"
+        exit 1
+    fi
+else
+    echo "✅ Docker is running"
+fi
+
+# ==================== DOCKER COMPOSE INSTALLATION ====================
+echo "🔧 Checking Docker Compose..."
+
+if ! command_exists docker-compose && ! docker compose version > /dev/null 2>&1; then
+    echo "❌ Docker Compose not found. Installing..."
+    
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Install docker-compose
+        sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        sudo chmod +x /usr/local/bin/docker-compose
+        
+        # Create symlink for docker compose (new syntax)
+        sudo ln -sf /usr/local/bin/docker-compose /usr/local/bin/docker-compose
+    else
+        echo "❌ Please install Docker Compose manually"
+        exit 1
+    fi
+else
+    echo "✅ Docker Compose is available"
+fi
+
+# ==================== SYSTEM LIMITS CONFIGURATION ====================
+echo "⚙️ Configuring system limits for Elasticsearch..."
+
+# Set vm.max_map_count for Elasticsearch
+if [[ "$ROOT_USER" == "true" ]] || sudo -n true 2>/dev/null; then
+    echo "🔧 Setting vm.max_map_count=262144..."
+    
+    # Set for current session
+    if [[ "$ROOT_USER" == "true" ]]; then
+        sysctl -w vm.max_map_count=262144
+    else
+        sudo sysctl -w vm.max_map_count=262144
+    fi
+    
+    # Persist the setting
+    if ! grep -q "vm.max_map_count=262144" /etc/sysctl.conf 2>/dev/null; then
+        if [[ "$ROOT_USER" == "true" ]]; then
+            echo "vm.max_map_count=262144" >> /etc/sysctl.conf
+        else
+            echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
+        fi
+        echo "✅ vm.max_map_count persisted in /etc/sysctl.conf"
+    else
+        echo "✅ vm.max_map_count already configured"
+    fi
+else
+    echo "⚠️  Cannot modify system limits (no sudo access). Please run:"
+    echo "   sudo sysctl -w vm.max_map_count=262144"
+    echo "   echo 'vm.max_map_count=262144' | sudo tee -a /etc/sysctl.conf"
+fi
+
+# Configure ulimits for the current user
+echo "🔧 Configuring ulimits..."
+
+# Check current limits
+echo "📊 Current limits:"
+echo "   Max open files: $(ulimit -n)"
+echo "   Max processes: $(ulimit -u)"
+
+# Set session limits
+ulimit -n 65536 2>/dev/null || echo "⚠️  Could not set ulimit -n"
+ulimit -u 32768 2>/dev/null || echo "⚠️  Could not set ulimit -u"
+
+# Configure persistent limits
+LIMITS_CONF="/etc/security/limits.conf"
+if [[ "$ROOT_USER" == "true" ]] || sudo -n true 2>/dev/null; then
+    if [[ -f "$LIMITS_CONF" ]]; then
+        echo "🔧 Configuring persistent limits in $LIMITS_CONF..."
+        
+        # Add limits for elasticsearch user and current user
+        CURRENT_USER=$(whoami)
+        
+        LIMITS_TO_ADD=(
+            "elasticsearch soft nofile 65536"
+            "elasticsearch hard nofile 65536"
+            "elasticsearch soft nproc 32768"
+            "elasticsearch hard nproc 32768"
+            "$CURRENT_USER soft nofile 65536"
+            "$CURRENT_USER hard nofile 65536"
+            "$CURRENT_USER soft nproc 32768"
+            "$CURRENT_USER hard nproc 32768"
+        )
+        
+        for limit in "${{LIMITS_TO_ADD[@]}}"; do
+            if ! grep -q "$limit" "$LIMITS_CONF" 2>/dev/null; then
+                if [[ "$ROOT_USER" == "true" ]]; then
+                    echo "$limit" >> "$LIMITS_CONF"
+                else
+                    echo "$limit" | sudo tee -a "$LIMITS_CONF" > /dev/null
+                fi
+                echo "✅ Added: $limit"
+            fi
+        done
+    fi
+else
+    echo "⚠️  Cannot modify $LIMITS_CONF (no sudo access)"
+fi
+
+# ==================== DIRECTORY CREATION ====================
+echo "📁 Creating directories for {node['name']}..."
+
+# Create directory structure
+DIRS=(
+    "./{node['name']}"
+    "./{node['name']}/data"
+    "./{node['name']}/logs"
+    "./{node['name']}/backups"
+    "./{node['name']}/config"
+    "./{node['name']}/plugins"
+)
+
+for dir in "${{DIRS[@]}}"; do
+    if [[ ! -d "$dir" ]]; then
+        mkdir -p "$dir"
+        echo "✅ Created: $dir"
+    else
+        echo "ℹ️  Exists: $dir"
+    fi
+done
+
+# ==================== PERMISSIONS CONFIGURATION ====================
+echo "🔐 Setting correct permissions..."
+
+# Elasticsearch runs as user 1000:1000 in Docker
+ES_UID=1000
+ES_GID=1000
+
+# Set ownership and permissions
+if [[ "$ROOT_USER" == "true" ]] || sudo -n true 2>/dev/null; then
+    echo "🔧 Setting ownership to $ES_UID:$ES_GID..."
+    
+    if [[ "$ROOT_USER" == "true" ]]; then
+        chown -R $ES_UID:$ES_GID ./{node['name']}/
+        chmod -R 755 ./{node['name']}/
+        chmod -R 777 ./{node['name']}/data
+        chmod -R 777 ./{node['name']}/logs
+        chmod -R 777 ./{node['name']}/backups
+    else
+        sudo chown -R $ES_UID:$ES_GID ./{node['name']}/
+        sudo chmod -R 755 ./{node['name']}/
+        sudo chmod -R 777 ./{node['name']}/data
+        sudo chmod -R 777 ./{node['name']}/logs
+        sudo chmod -R 777 ./{node['name']}/backups
+    fi
+    
+    echo "✅ Permissions set successfully"
+else
+    echo "⚠️  Cannot set ownership (no sudo access). Please run:"
+    echo "   sudo chown -R 1000:1000 ./{node['name']}/"
+    echo "   sudo chmod -R 755 ./{node['name']}/"
+    echo "   sudo chmod -R 777 ./{node['name']}/{{data,logs,backups}}"
+fi
+
+# ==================== VALIDATION ====================
+echo "🔍 Validating setup..."
+
+# Check Docker
+if docker info > /dev/null 2>&1; then
+    echo "✅ Docker: Ready"
+else
+    echo "❌ Docker: Not ready"
+fi
+
+# Check Docker Compose
+if command_exists docker-compose || docker compose version > /dev/null 2>&1; then
+    echo "✅ Docker Compose: Available"
+else
+    echo "❌ Docker Compose: Not available"
+fi
+
+# Check directories
+all_dirs_exist=true
+for dir in "${{DIRS[@]}}"; do
+    if [[ ! -d "$dir" ]]; then
+        echo "❌ Directory missing: $dir"
+        all_dirs_exist=false
+    fi
+done
+
+if [[ "$all_dirs_exist" == "true" ]]; then
+    echo "✅ Directories: All present"
+fi
+
+# Check system limits
+current_max_map_count=$(sysctl vm.max_map_count 2>/dev/null | awk '{{print $3}}' || echo "unknown")
+if [[ "$current_max_map_count" -ge 262144 ]] 2>/dev/null; then
+    echo "✅ vm.max_map_count: $current_max_map_count (sufficient)"
+else
+    echo "⚠️  vm.max_map_count: $current_max_map_count (should be 262144+)"
+fi
+
+echo ""
+echo "==============================================="
+echo "✅ System initialization for {node['name']} completed!"
+echo ""
+echo "📋 Next steps:"
+echo "1. Run the node-specific run script: ./run-{node['name']}.sh"
+echo "2. Check logs: docker logs {node['name']}"
+echo "3. Monitor health: curl http://{node['ip']}:{node['http_port']}/_cluster/health"
+echo ""
+echo "⚠️  If you see permission errors, you may need to run:"
+echo "   sudo chown -R 1000:1000 ./{node['name']}/"
+echo "==============================================="
+"""
+    
+    return script_content
+
+def generate_node_run_script(node, config):
+    """Generate node-specific run script for starting Elasticsearch"""
+    cluster_name = config['cluster_name']
+    
+    script_content = f"""#!/bin/bash
+# Run Script for Elasticsearch Node: {node['name']}
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Cluster: {cluster_name} | Node: {node['name']} | Roles: {', '.join(node['roles'])}
+
+set -e
+
+echo "🚀 Starting Elasticsearch Node: {node['name']}"
+echo "📊 Cluster: {cluster_name}"
+echo "🎭 Roles: {', '.join(node['roles'])}"
+echo "💻 Hardware: {node['cpu_cores']} cores, {node['ram_gb']}GB RAM"
+echo "🌐 Network: {node['ip']}:{node['http_port']}"
+echo "==============================================="
+
+# Function to check if command exists
+command_exists() {{
+    command -v "$1" >/dev/null 2>&1
+}}
+
+# ==================== PRE-FLIGHT CHECKS ====================
+echo "🔍 Running pre-flight checks..."
+
+# Check if Docker is running
+if ! docker info > /dev/null 2>&1; then
+    echo "❌ Docker is not running. Please start Docker first or run init script."
+    exit 1
+fi
+echo "✅ Docker is running"
+
+# Check if Docker Compose is available
+if ! command_exists docker-compose && ! docker compose version > /dev/null 2>&1; then
+    echo "❌ Docker Compose not found. Please install it or run init script."
+    exit 1
+fi
+echo "✅ Docker Compose is available"
+
+# Check if compose file exists
+COMPOSE_FILE="docker-compose-{node['name']}.yml"
+if [[ ! -f "$COMPOSE_FILE" ]]; then
+    echo "❌ Docker Compose file not found: $COMPOSE_FILE"
+    echo "ℹ️  Please ensure you've extracted all files from the cluster package."
+    exit 1
+fi
+echo "✅ Docker Compose file found: $COMPOSE_FILE"
+
+# ==================== DIRECTORY VALIDATION ====================
+echo "📁 Validating directories for {node['name']}..."
+
+# Required directories
+DIRS=(
+    "./{node['name']}"
+    "./{node['name']}/data"
+    "./{node['name']}/logs"
+    "./{node['name']}/backups"
+    "./{node['name']}/config"
+)
+
+missing_dirs=false
+for dir in "${{DIRS[@]}}"; do
+    if [[ ! -d "$dir" ]]; then
+        echo "⚠️  Creating missing directory: $dir"
+        mkdir -p "$dir"
+        missing_dirs=true
+    fi
+done
+
+if [[ "$missing_dirs" == "true" ]]; then
+    echo "ℹ️  Some directories were missing and have been created."
+    echo "ℹ️  Consider running the init script for proper setup."
+fi
+
+# ==================== PERMISSIONS CHECK ====================
+echo "🔐 Checking permissions..."
+
+# Check if directories are writable
+for dir in "./{node['name']}/data" "./{node['name']}/logs" "./{node['name']}/backups"; do
+    if [[ ! -w "$dir" ]]; then
+        echo "⚠️  Directory not writable: $dir"
+        echo "🔧 Attempting to fix permissions..."
+        
+        if sudo -n true 2>/dev/null; then
+            sudo chown -R 1000:1000 ./{node['name']}/
+            sudo chmod -R 755 ./{node['name']}/
+            sudo chmod -R 777 ./{node['name']}/data ./{node['name']}/logs ./{node['name']}/backups
+            echo "✅ Permissions fixed"
+        else
+            echo "❌ Cannot fix permissions. Please run:"
+            echo "   sudo chown -R 1000:1000 ./{node['name']}/"
+            echo "   sudo chmod -R 777 ./{node['name']}/{{data,logs,backups}}"
+            echo "   Or run the init script with appropriate privileges."
+        fi
+    fi
+done
+
+# ==================== SYSTEM LIMITS CHECK ====================
+echo "⚙️ Checking system limits..."
+
+# Check vm.max_map_count
+current_max_map_count=$(sysctl vm.max_map_count 2>/dev/null | awk '{{print $3}}' || echo "0")
+if [[ "$current_max_map_count" -lt 262144 ]] 2>/dev/null; then
+    echo "⚠️  vm.max_map_count is $current_max_map_count (should be 262144+)"
+    echo "🔧 Attempting to fix..."
+    
+    if sudo -n true 2>/dev/null; then
+        sudo sysctl -w vm.max_map_count=262144
+        echo "✅ vm.max_map_count set to 262144"
+    else
+        echo "❌ Cannot set vm.max_map_count. Please run:"
+        echo "   sudo sysctl -w vm.max_map_count=262144"
+        echo "   Or run the init script with appropriate privileges."
+    fi
+else
+    echo "✅ vm.max_map_count: $current_max_map_count (sufficient)"
+fi
+
+# Check ulimits
+current_nofile=$(ulimit -n)
+if [[ "$current_nofile" -lt 65536 ]] 2>/dev/null; then
+    echo "⚠️  Current ulimit -n: $current_nofile (recommended: 65536+)"
+    ulimit -n 65536 2>/dev/null || echo "❌ Could not increase file descriptor limit"
+else
+    echo "✅ File descriptor limit: $current_nofile (sufficient)"
+fi
+
+# ==================== CONTAINER MANAGEMENT ====================
+echo "🐳 Managing {node['name']} container..."
+
+# Check if container already exists
+if docker ps -a --format "table {{{{.Names}}}}" | grep -q "^{node['name']}$"; then
+    echo "ℹ️  Container {node['name']} already exists"
+    
+    # Check if it's running
+    if docker ps --format "table {{{{.Names}}}}" | grep -q "^{node['name']}$"; then
+        echo "ℹ️  Container {node['name']} is already running"
+        
+        echo "🔄 Checking container health..."
+        for i in {{1..10}}; do
+            if curl -f http://{node['ip']}:{node['http_port']}/_cluster/health > /dev/null 2>&1; then
+                echo "✅ {node['name']} is healthy and ready!"
+                break
+            fi
+            echo "⏳ Waiting for health check... ($i/10)"
+            sleep 3
+        done
+        
+        echo "📊 Container status:"
+        docker ps --filter "name={node['name']}" --format "table {{{{.Names}}}}\\t{{{{.Status}}}}\\t{{{{.Ports}}}}"
+        
+        echo ""
+        echo "🔗 Useful commands:"
+        echo "   View logs: docker logs {node['name']}"
+        echo "   Follow logs: docker logs -f {node['name']}"
+        echo "   Stop: docker stop {node['name']}"
+        echo "   Restart: docker restart {node['name']}"
+        
+        exit 0
+    else
+        echo "🔄 Starting existing container..."
+        docker start {node['name']}
+    fi
+else
+    echo "🚀 Creating and starting new container..."
+    
+    # Determine docker-compose command
+    if command_exists docker-compose; then
+        COMPOSE_CMD="docker-compose"
+    else
+        COMPOSE_CMD="docker compose"
+    fi
+    
+    # Start the container
+    $COMPOSE_CMD -f "$COMPOSE_FILE" up -d
+fi
+
+# ==================== HEALTH CHECK ====================
+echo "🏥 Performing health check..."
+
+echo "⏳ Waiting for {node['name']} to be ready..."
+for i in {{1..60}}; do
+    if curl -f http://{node['ip']}:{node['http_port']}/_cluster/health > /dev/null 2>&1; then
+        echo "✅ {node['name']} is healthy and ready!"
+        break
+    fi
+    
+    if [[ $i -eq 60 ]]; then
+        echo "❌ {node['name']} failed to become ready after 5 minutes"
+        echo "📋 Troubleshooting steps:"
+        echo "   1. Check logs: docker logs {node['name']}"
+        echo "   2. Check container status: docker ps -a"
+        echo "   3. Verify permissions on data directories"
+        echo "   4. Check system resources (disk space, memory)"
+        exit 1
+    fi
+    
+    echo "⏳ Waiting for {node['name']} to be ready... ($i/60)"
+    sleep 5
+done
+
+# ==================== STATUS REPORT ====================
+echo ""
+echo "==============================================="
+echo "📊 Node Status Report: {node['name']}"
+echo "==============================================="
+
+# Container status
+echo "🐳 Container Status:"
+docker ps --filter "name={node['name']}" --format "table {{{{.Names}}}}\\t{{{{.Status}}}}\\t{{{{.Ports}}}}"
+
+# Elasticsearch cluster health
+echo ""
+echo "🏥 Cluster Health:"
+curl -s http://{node['ip']}:{node['http_port']}/_cluster/health?pretty 2>/dev/null || echo "❌ Could not retrieve cluster health"
+
+# Node info
+echo ""
+echo "🖥️ Node Information:"
+curl -s http://{node['ip']}:{node['http_port']}/_nodes/{node['name']}?pretty 2>/dev/null | grep -E '"name"|"version"|"roles"' || echo "❌ Could not retrieve node info"
+
+echo ""
+echo "==============================================="
+echo "✅ {node['name']} is running successfully!"
+echo ""
+echo "🔗 Useful URLs:"
+echo "   Health: http://{node['ip']}:{node['http_port']}/_cluster/health"
+echo "   Stats:  http://{node['ip']}:{node['http_port']}/_nodes/stats"
+echo "   Cat:    http://{node['ip']}:{node['http_port']}/_cat/nodes?v"
+echo ""
+echo "📋 Management Commands:"
+echo "   View logs:    docker logs {node['name']}"
+echo "   Follow logs:  docker logs -f {node['name']}"
+echo "   Stop node:    docker stop {node['name']}"
+echo "   Restart node: docker restart {node['name']}"
+echo "   Remove node:  docker-compose -f docker-compose-{node['name']}.yml down"
+echo "==============================================="
+"""
+    
+    return script_content
 
 # Create main layout - sidebar is handled by st.sidebar, main content uses full width
 main_col = st.container()
@@ -1352,7 +1952,7 @@ with main_col:
                                         index=list(NODE_ROLES.keys()).index(current_role_key),
                                         key=f"role_{i}",
                                         help="Select the roles for this node"
-                                    )
+                                )
                                     st.session_state.cluster_config['nodes'][i]['roles'] = NODE_ROLES[role_selection]['roles']
                                     st.caption(f"📝 {NODE_ROLES[role_selection]['description']}")
                                     
@@ -1362,21 +1962,21 @@ with main_col:
                                         value=node['name'],
                                         key=f"name_{i}",
                                         help="Unique name for this node"
-                                    )
+                                )
                                     
                                     st.session_state.cluster_config['nodes'][i]['hostname'] = st.text_input(
                                         "🌐 Hostname",
                                         value=node['hostname'],
                                         key=f"hostname_{i}",
                                         help="Hostname for this node"
-                                    )
+                                )
                                     
                                     st.session_state.cluster_config['nodes'][i]['ip'] = st.text_input(
                                         "🌐 IP Address",
                                         value=node['ip'],
                                         key=f"ip_{i}",
                                         help="IP address for this node"
-                                    )
+                                )
                                     
                                     # Hardware configuration - vertical layout to avoid nesting columns
                                     st.session_state.cluster_config['nodes'][i]['cpu_cores'] = st.number_input(
@@ -1386,7 +1986,7 @@ with main_col:
                                         value=node['cpu_cores'],
                                         key=f"cpu_{i}",
                                         help="CPU cores"
-                                    )
+                                )
                                     
                                     st.session_state.cluster_config['nodes'][i]['ram_gb'] = st.number_input(
                                         "💾 RAM (GB)",
@@ -1395,7 +1995,7 @@ with main_col:
                                         value=node['ram_gb'],
                                         key=f"ram_{i}",
                                         help="RAM in GB"
-                                    )
+                                )
                                     
                                     st.session_state.cluster_config['nodes'][i]['http_port'] = st.number_input(
                                         "🔌 HTTP Port",
@@ -1404,7 +2004,7 @@ with main_col:
                                         value=node['http_port'],
                                         key=f"http_port_{i}",
                                         help="HTTP port"
-                                    )
+                                )
                                     
                                     st.session_state.cluster_config['nodes'][i]['transport_port'] = st.number_input(
                                         "🔌 Transport Port",
@@ -1413,14 +2013,14 @@ with main_col:
                                         value=node['transport_port'],
                                         key=f"transport_port_{i}",
                                         help="Transport port"
-                                    )
+                                )
+                                    
+                                    # Tabs for Summary and Details
+                                    tab1, tab2 = st.tabs(["📊 Quick Summary", "🎯 Details"])
                                     
                                     # Calculate optimal settings for tabs
                                     optimal = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
                                     node_type = "Master-Only" if node['roles'] == ['master'] else "Data Node" if 'data' in node['roles'] else "Mixed"
-                                    
-                                    # Tabs for Summary and Details
-                                    tab1, tab2 = st.tabs(["📊 Quick Summary", "🎯 Details"])
                                     
                                     with tab1:
                                         # Role-specific recommendations  
@@ -1587,7 +2187,27 @@ with main_col:
                 st.success("✅ Configuration validated successfully!")
                 
                 # Generate cluster files
-                st.info("💡 **New Feature**: Individual files for each node - compose, env, and init scripts!")
+                st.info("🚀 **Enhanced Package**: Individual Docker Compose files + comprehensive init.sh and run scripts for each node!")
+                
+                with st.expander("📋 **What's Included in the Package**", expanded=False):
+                    st.markdown("""
+                    **System-wide Scripts:**
+                    - `init.sh` - Comprehensive system initialization (Docker, permissions, limits)
+                    - `README.md` - Complete documentation and usage instructions
+                    
+                    **Per-Node Files:**
+                    - `docker-compose-<node>.yml` - Complete Docker Compose with integrated settings
+                    - `run-<node>.sh` - Node-specific run script with health checks and validation
+                    - `init-<node>.sh` - Legacy initialization script (backwards compatibility)
+                    
+                    **Key Features:**
+                    - ✅ Docker installation and setup
+                    - ✅ System limits configuration (vm.max_map_count, ulimits)
+                    - ✅ Directory creation and permissions
+                    - ✅ Pre-flight checks and validation
+                    - ✅ Health monitoring and status reporting
+                    - ✅ Automatic hostname resolution between nodes
+                    """)
                 
                 if st.button("🚀 Generate Cluster Files", use_container_width=True, type="primary"):
                     cluster_files = generate_cluster_files(st.session_state.cluster_config)
@@ -1624,26 +2244,48 @@ with main_col:
                                 st.markdown(f"### 🖥️ {node['name']} Configuration Files")
                                 st.markdown(f"**Roles**: {', '.join(node['roles']).title()} | **Hardware**: {node['cpu_cores']} cores, {node['ram_gb']}GB RAM")
                                 
-                                # Show compose file for this node
-                                st.subheader("🐳 Docker Compose File")
-                                compose_content = generate_individual_docker_compose(node, st.session_state.cluster_config)
-                                st.code(compose_content, language='yaml')
+                                # Create tabs for different file types
+                                file_tab1, file_tab2, file_tab3, file_tab4 = st.tabs(["🐳 Docker Compose", "🚀 Run Script", "⚙️ System Init", "📜 Legacy Init"])
                                 
-                                # Show note about integrated settings
-                                st.info("✅ **All settings integrated**: Environment variables, X-Pack features, and configurations are included directly in the Docker Compose file above.")
+                                with file_tab1:
+                                    st.subheader("🐳 Docker Compose File")
+                                    compose_content = generate_individual_docker_compose(node, st.session_state.cluster_config)
+                                    st.code(compose_content, language='yaml')
+                                    st.info("✅ **All settings integrated**: Environment variables, X-Pack features, and configurations are included directly in the Docker Compose file.")
                                 
-                                # Show init script for this node
-                                st.subheader("🚀 Initialization Script")
-                                init_content = generate_init_script(node, st.session_state.cluster_config)
-                                with st.expander(f"View init-{node['name']}.sh", expanded=False):
+                                with file_tab2:
+                                    st.subheader(f"🚀 Run Script: run-{node['name']}.sh")
+                                    st.markdown("**Purpose**: Start this specific node with comprehensive health checks and validation")
+                                    run_content = generate_node_run_script(node, st.session_state.cluster_config)
+                                    st.code(run_content, language='bash')
+                                    st.success("✅ **Features**: Pre-flight checks, directory validation, permissions check, health monitoring")
+                                
+                                with file_tab3:
+                                    st.subheader("⚙️ System Initialization: init.sh")
+                                    st.markdown("**Purpose**: One-time system setup for Docker, permissions, and system limits")
+                                    init_content = generate_system_init_script(node, st.session_state.cluster_config)
                                     st.code(init_content, language='bash')
+                                    st.info("✅ **Features**: Docker installation, system limits (vm.max_map_count), ulimits, directory creation, permissions")
+                                
+                                with file_tab4:
+                                    st.subheader(f"📜 Legacy Init: init-{node['name']}.sh")
+                                    st.markdown("**Purpose**: Basic node initialization (kept for backwards compatibility)")
+                                    legacy_init_content = generate_init_script(node, st.session_state.cluster_config)
+                                    st.code(legacy_init_content, language='bash')
+                                    st.warning("⚠️ **Legacy**: Use the System Init and Run scripts for better functionality")
                                 
                                 # Show file summary
+                                st.markdown("---")
                                 st.info(f"""
-                                📦 **Files for {node['name']}**:
-                                - `docker-compose-{node['name']}.yml` - Complete Docker Compose with all settings
-                                - `init-{node['name']}.sh` - Automated setup and start script
-                                - **Extra Hosts**: Automatic hostname resolution for all cluster nodes
+                                📦 **Complete Package for {node['name']}**:
+                                - `docker-compose-{node['name']}.yml` - Complete Docker Compose with integrated settings
+                                - `run-{node['name']}.sh` - Node-specific run script with validation and health checks
+                                - `init.sh` - System-wide initialization (Docker, permissions, limits)
+                                - `init-{node['name']}.sh` - Legacy initialization script
+                                
+                                **Recommended workflow**:
+                                1. Run `init.sh` once for system setup
+                                2. Run `run-{node['name']}.sh` to start this node
                                 """)
                     else:
                         st.warning("No nodes configured for preview")
