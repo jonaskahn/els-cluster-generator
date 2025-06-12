@@ -1,0 +1,27 @@
+# Elasticsearch Cluster Configuration Generator
+# Requirements file for production deployment
+
+# Core web application framework
+streamlit>=1.28.0
+
+# YAML processing (for potential future config file support)
+PyYAML>=6.0
+
+# Additional helpful packages for deployment
+# (Optional but recommended for production)
+
+# For better performance in production
+streamlit-authenticator>=0.2.3
+
+# For enhanced UI components (mentioned in the code comments)
+# Uncomment the line below if you want to use modern UI components
+# streamlit-shadcn-ui>=0.1.0
+
+# For monitoring and logging in production
+# psutil>=5.9.0
+# python-dotenv>=1.0.0
+
+# Development dependencies (uncomment for development)
+# pytest>=7.4.0
+# black>=23.0.0
+# flake8>=6.0.0 
