@@ -5,6 +5,7 @@ from datetime import datetime
 import zipfile
 import io
 from typing import Dict, List, Any
+import streamlit_mermaid as stmd
 
 # Configure Streamlit page
 st.set_page_config(
@@ -3650,14 +3651,194 @@ curl http://{node['ip']}:{node['http_port']}/_nodes/{node['name']}?pretty
     
     return readme_content
 
+def generate_cluster_visualization(config):
+    """Generate dynamic Mermaid diagram based on cluster configuration"""
+    nodes = config['nodes']
+    cluster_name = config['cluster_name']
+    
+    if not nodes:
+        return "graph TD\n    A[No nodes configured]"
+    
+    # Categorize nodes by their roles
+    master_only_nodes = [n for n in nodes if n['roles'] == ['master']]
+    master_data_nodes = [n for n in nodes if 'master' in n['roles'] and 'data' in n['roles']]
+    data_only_nodes = [n for n in nodes if 'data' in n['roles'] and 'master' not in n['roles']]
+    all_master_eligible = master_only_nodes + master_data_nodes
+    all_data_nodes = master_data_nodes + data_only_nodes
+    
+    # Build Mermaid diagram
+    mermaid_code = "graph TD\n"
+    
+    # Load balancer (if multiple master-eligible nodes)
+    if len(all_master_eligible) > 1:
+        mermaid_code += '    LB["Load Balancer|Entry Point"]\n'
+    
+    # Master-eligible nodes
+    master_nodes_added = []
+    for i, node in enumerate(all_master_eligible):
+        node_id = f"M{i+1}"
+        master_nodes_added.append(node_id)
+        
+        # Determine node type and specs
+        optimal = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
+        heap_size = optimal['heap_size']
+        
+        if node['roles'] == ['master']:
+            # Master-only node - simplified label without commas
+            node_label = f"{node['name']}|Master Only|{node['cpu_cores']}C {node['ram_gb']}GB|Heap: {heap_size}"
+            mermaid_code += f'    {node_id}["{node_label}"]\n'
+        else:
+            # Master + Data node - simplified label
+            capacity = int(optimal['capacity_estimates']['data_capacity_gb'])
+            node_label = f"{node['name']}|Master + Data|{node['cpu_cores']}C {node['ram_gb']}GB|Heap: {heap_size}|~{capacity}GB Data"
+            mermaid_code += f'    {node_id}["{node_label}"]\n'
+    
+    # Data-only nodes
+    data_nodes_added = []
+    for i, node in enumerate(data_only_nodes):
+        node_id = f"D{i+1}"
+        data_nodes_added.append(node_id)
+        
+        optimal = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
+        heap_size = optimal['heap_size']
+        capacity = int(optimal['capacity_estimates']['data_capacity_gb'])
+        search_threads = optimal['thread_pools']['search']
+        
+        node_label = f"{node['name']}|Data + Ingest|{node['cpu_cores']}C {node['ram_gb']}GB|Heap: {heap_size}|~{capacity}GB Data|{search_threads} Search Threads"
+        mermaid_code += f'    {node_id}["{node_label}"]\n'
+    
+    # Connect to master nodes
+    if len(all_master_eligible) > 1:
+        # Via load balancer to distribute requests
+        for master_id in master_nodes_added:
+            mermaid_code += f"    LB --> {master_id}\n"
+    
+    # Master coordination (if multiple masters)
+    if len(master_nodes_added) > 1:
+        for i in range(len(master_nodes_added)):
+            for j in range(i+1, len(master_nodes_added)):
+                mermaid_code += f"    {master_nodes_added[i]} -.-> {master_nodes_added[j]}\n"
+    
+    # Master to data connections (for mixed master+data nodes)
+    master_data_ids = []
+    for i, node in enumerate(master_data_nodes):
+        master_data_ids.append(f"M{all_master_eligible.index(node)+1}")
+    
+    # Pure data node connections
+    if data_nodes_added:
+        # Masters coordinate with data nodes
+        for master_id in master_nodes_added:
+            for data_id in data_nodes_added:
+                mermaid_code += f"    {master_id} -.-> {data_id}\n"
+    
+    # Data replication between data nodes (if multiple data nodes exist)
+    total_data_node_ids = master_data_ids + data_nodes_added
+    if len(total_data_node_ids) > 1:
+        mermaid_code += "\n    %% Data replication between data nodes\n"
+        for i in range(len(total_data_node_ids)):
+            for j in range(i+1, len(total_data_node_ids)):
+                mermaid_code += f"    {total_data_node_ids[i]} <-.-> {total_data_node_ids[j]}\n"
+    
+    # Add styling
+    mermaid_code += "\n    %% Styling\n"
+    mermaid_code += "    classDef masterNode fill:#e1f5fe,stroke:#01579b,stroke-width:2px\n"
+    mermaid_code += "    classDef dataNode fill:#f3e5f5,stroke:#4a148c,stroke-width:2px\n"
+    mermaid_code += "    classDef mixedNode fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px\n"
+    mermaid_code += "    classDef lb fill:#fce4ec,stroke:#880e4f,stroke-width:2px\n"
+    
+    # Apply styling
+    if len(all_master_eligible) > 1:
+        mermaid_code += "    class LB lb\n"
+    
+    # Style master-only nodes
+    for i, node in enumerate(master_only_nodes):
+        if node in all_master_eligible:
+            master_index = all_master_eligible.index(node)
+            mermaid_code += f"    class M{master_index+1} masterNode\n"
+    
+    # Style master+data nodes
+    for i, node in enumerate(master_data_nodes):
+        if node in all_master_eligible:
+            master_index = all_master_eligible.index(node)
+            mermaid_code += f"    class M{master_index+1} mixedNode\n"
+    
+    # Style data-only nodes
+    for i, node_id in enumerate(data_nodes_added):
+        mermaid_code += f"    class {node_id} dataNode\n"
+    
+    return mermaid_code
+
+def generate_request_flow_diagram(config):
+    """Generate diagram showing request flow patterns"""
+    nodes = config['nodes']
+    
+    if not nodes:
+        return "graph TD\n    A[No nodes configured]"
+    
+    # Categorize nodes
+    master_eligible = [n for n in nodes if 'master' in n['roles']]
+    data_nodes = [n for n in nodes if 'data' in n['roles']]
+    
+    mermaid_code = "graph TD\n"
+    
+    # Master nodes handle different request types
+    if master_eligible:
+        master_node = master_eligible[0]  # Use first master for example
+        optimal_master = calculate_optimal_settings(master_node['cpu_cores'], master_node['ram_gb'], master_node['roles'])
+        heap_size = optimal_master['heap_size']
+        
+        if master_node['roles'] == ['master']:
+            master_label = f"{master_node['name']}|Master Only|{master_node['cpu_cores']}C {master_node['ram_gb']}GB|Entry Point"
+        else:
+            capacity = int(optimal_master['capacity_estimates']['data_capacity_gb'])
+            master_label = f"{master_node['name']}|Master + Data|{master_node['cpu_cores']}C {master_node['ram_gb']}GB|Entry Point"
+            
+        mermaid_code += f'    Master["{master_label}"]\n'
+    
+    # Data nodes handle actual data operations
+    if data_nodes:
+        for i, node in enumerate(data_nodes[:3]):  # Show up to 3 data nodes
+            optimal = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
+            capacity = int(optimal['capacity_estimates']['data_capacity_gb'])
+            
+            node_id = f"Data{i+1}"
+            node_label = f"{node['name']}|Data Node|~{capacity}GB Capacity"
+            mermaid_code += f'    {node_id}["{node_label}"]\n'
+            
+            if master_eligible:
+                mermaid_code += f"    Master --> {node_id}\n"
+    
+    # Add request flow details with labels
+    mermaid_code += "\n    %% Request Flow - Master coordinates with Data Nodes\n"
+    if data_nodes:
+        mermaid_code += '    Master -.->|"Distribute Queries"| Data1\n'
+        if len(data_nodes) > 1:
+            mermaid_code += '    Master -.->|"Distribute Queries"| Data2\n'
+        if len(data_nodes) > 2:
+            mermaid_code += '    Master -.->|"Distribute Queries"| Data3\n'
+        
+        mermaid_code += '    Data1 -.->|"Return Results"| Master\n'
+        if len(data_nodes) > 1:
+            mermaid_code += '    Data2 -.->|"Return Results"| Master\n'
+        if len(data_nodes) > 2:
+            mermaid_code += '    Data3 -.->|"Return Results"| Master\n'
+    
+    # Styling
+    mermaid_code += "\n    classDef master fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px\n"
+    mermaid_code += "    classDef data fill:#f3e5f5,stroke:#4a148c,stroke-width:2px\n"
+    
+    mermaid_code += "    class Master master\n"
+    
+    for i in range(min(3, len(data_nodes))):
+        mermaid_code += f"    class Data{i+1} data\n"
+    
+    return mermaid_code
+
 # Create main layout - sidebar is handled by st.sidebar, main content uses full width
 main_col = st.container()
 
 # Right sidebar for configuration
 with st.sidebar:
-    # Ensure nodes are synchronized before displaying sidebar
-    ensure_nodes_sync()
-    
     st.header("📁 Configuration Management")
     st.markdown("---")
     
@@ -3803,7 +3984,7 @@ with main_col:
         ✅ **Benefits**: Maximum ES performance, minimal OS waste, follows ES documentation
         """)    
 
-    tab1, tab2, tab3 = st.tabs(["🔧 Cluster Setup", "🖥️ Node Configuration", "📄 Generate Files"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔧 Cluster Setup", "🖥️ Node Configuration", "📊 Visualize", "📄 Generate Files"])
 
     with tab1:
         st.header("🔧 Cluster Configuration")
@@ -3847,47 +4028,21 @@ with main_col:
                 help="Name for your Elasticsearch cluster"
             )
             
-            # Node count with +/- buttons - using inline layout
-            st.markdown("🖥️ **Number of Nodes**")
+            # Node count using number input for reliable increment/decrement
+            new_node_count = st.number_input(
+                "🖥️ Number of Nodes",
+                min_value=1,
+                max_value=20,
+                value=st.session_state.node_count,
+                step=1,
+                help="Select the number of nodes for your cluster (1-20)"
+            )
             
-            # Create inline layout using markdown and buttons
-            button_col1, display_col, button_col2 = st.columns([1, 2, 1])
-            
-            with button_col1:
-                decrease = st.button("➖", key="remove_node", help="Remove a node")
-            
-            with display_col:
-                st.markdown(f"<div style='text-align: center; font-size: 1.2em; font-weight: bold; padding: 8px; margin-top: 8px;'>{st.session_state.node_count} nodes</div>", unsafe_allow_html=True)
-            
-            with button_col2:
-                increase = st.button("➕", key="add_node", help="Add a node")
-            
-            # Handle button clicks and ensure nodes are created/updated
-            if decrease and st.session_state.node_count > 1:
-                st.session_state.node_count -= 1
-                # Remove excess node when decreasing
-                if len(st.session_state.cluster_config['nodes']) > st.session_state.node_count:
-                    st.session_state.cluster_config['nodes'] = st.session_state.cluster_config['nodes'][:st.session_state.node_count]
+            # Update node count and sync nodes when changed
+            if new_node_count != st.session_state.node_count:
+                st.session_state.node_count = new_node_count
+                ensure_nodes_sync()
                 st.rerun()
-            elif increase and st.session_state.node_count < 20:
-                st.session_state.node_count += 1
-                # Add new node when increasing
-                current_nodes = len(st.session_state.cluster_config['nodes'])
-                if current_nodes < st.session_state.node_count:
-                    new_node = {
-                        'name': generate_node_name(current_nodes + 1, st.session_state.cluster_config['primary_domain']),
-                        'hostname': generate_hostname(current_nodes + 1, st.session_state.cluster_config['primary_domain']),
-                        'roles': ['master', 'data', 'ingest'],
-                        'cpu_cores': 8,
-                        'ram_gb': 32,
-                        'ip': f"10.0.1.{10 + current_nodes}",
-                        'http_port': 9200,
-                        'transport_port': 9300
-                    }
-                    st.session_state.cluster_config['nodes'].append(new_node)
-                st.rerun()
-            
-            st.caption("Use +/- buttons to adjust node count (max 20)")
         
         # X-Pack Configuration
         st.subheader("🛡️ X-Pack Features Configuration")
@@ -3934,26 +4089,6 @@ with main_col:
 
     with tab2:
         st.header("🖥️ Node Configuration")
-        
-        # Ensure nodes list matches node count
-        current_nodes = len(st.session_state.cluster_config['nodes'])
-        if current_nodes < st.session_state.node_count:
-            # Add new nodes
-            for i in range(current_nodes, st.session_state.node_count):
-                new_node = {
-                    'name': generate_node_name(i + 1, st.session_state.cluster_config['primary_domain']),
-                    'hostname': generate_hostname(i + 1, st.session_state.cluster_config['primary_domain']),
-                    'roles': ['master', 'data', 'ingest'],
-                    'cpu_cores': 8,
-                    'ram_gb': 32,
-                    'ip': f"10.0.1.{10 + i}",
-                    'http_port': 9200,
-                    'transport_port': 9300
-                }
-                st.session_state.cluster_config['nodes'].append(new_node)
-        elif current_nodes > st.session_state.node_count:
-            # Remove excess nodes
-            st.session_state.cluster_config['nodes'] = st.session_state.cluster_config['nodes'][:st.session_state.node_count]
         
         # Node configuration in responsive grid layout
         nodes = st.session_state.cluster_config['nodes']
@@ -4210,6 +4345,174 @@ with main_col:
             st.info("📝 Add nodes by increasing the 'Number of Nodes' in the Cluster Setup tab.")
 
     with tab3:
+        st.header("📊 Cluster Architecture Visualization")
+        
+        if len(st.session_state.cluster_config['nodes']) == 0:
+            st.warning("⚠️ Please configure at least one node in the Node Configuration tab to see the visualization.")
+            st.info("""
+            **To get started:**
+            1. Go to the "🔧 Cluster Setup" tab and set your cluster name and node count
+            2. Configure your nodes in the "🖥️ Node Configuration" tab
+            3. Return here to see your cluster architecture visualized!
+            """)
+        else:
+            # Calculate cluster stats
+            nodes = st.session_state.cluster_config['nodes']
+            master_eligible = [n for n in nodes if 'master' in n['roles']]
+            data_nodes = [n for n in nodes if 'data' in n['roles']]
+            master_only = [n for n in nodes if n['roles'] == ['master']]
+            master_data = [n for n in nodes if 'master' in n['roles'] and 'data' in n['roles']]
+            data_only = [n for n in nodes if 'data' in n['roles'] and 'master' not in n['roles']]
+            
+            # Cluster overview
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Nodes", len(nodes))
+            with col2:
+                st.metric("Master Eligible", len(master_eligible))
+            with col3:
+                st.metric("Data Nodes", len(data_nodes))
+            with col4:
+                min_masters = calculate_minimum_master_nodes(len(nodes), len(master_eligible))
+                st.metric("Min Masters", min_masters)
+            
+            # Node breakdown
+            with st.expander("📊 **Cluster Composition Breakdown**", expanded=False):
+                st.markdown(f"""
+                **Node Role Distribution:**
+                - 👑 **Master-only nodes**: {len(master_only)} (dedicated cluster coordination)
+                - 👑💾 **Master + Data nodes**: {len(master_data)} (coordination + data storage)
+                - 💾 **Data-only nodes**: {len(data_only)} (pure data storage and search)
+                
+                **Cluster Characteristics:**
+                - **Master-eligible nodes**: {len(master_eligible)} out of {len(nodes)} total
+                - **Split-brain protection**: Requires {min_masters} active masters
+                - **Data storage capacity**: {len(data_nodes)} nodes handling data operations
+                """)
+                
+                # Performance summary
+                total_capacity = 0
+                total_search_threads = 0
+                total_cpu = 0
+                total_ram = 0
+                
+                for node in data_nodes:
+                    optimal = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
+                    total_capacity += optimal['capacity_estimates']['data_capacity_gb']
+                    total_search_threads += optimal['thread_pools']['search']
+                    total_cpu += node['cpu_cores']
+                    total_ram += node['ram_gb']
+                
+                if total_capacity > 0:
+                    st.markdown(f"""
+                    **Estimated Cluster Performance:**
+                    - **Total Data Capacity**: ~{total_capacity:,.0f}GB
+                    - **Search Thread Pool**: {total_search_threads} threads across all data nodes
+                    - **Total Hardware**: {total_cpu} CPU cores, {total_ram}GB RAM
+                    """)
+            
+            # Visualization options
+            st.subheader("🎨 Visualization Options")
+            
+            viz_type = st.radio(
+                "Select visualization type:",
+                options=["cluster_architecture", "request_flow"],
+                format_func=lambda x: "🏗️ Cluster Architecture" if x == "cluster_architecture" else "🔄 Request Flow",
+                horizontal=True,
+                help="Choose between cluster architecture view or request flow diagram"
+            )
+            
+            # Generate and display visualization
+            if viz_type == "cluster_architecture":
+                st.subheader("🏗️ Cluster Architecture")
+                st.markdown("""
+                This diagram shows your cluster's internal architecture, node types, and their relationships.
+                
+                **Legend:**
+                - ⚖️ **Load Balancer**: Distributes requests (shown when multiple master nodes exist)
+                - 👑 **Master Nodes**: Coordinate cluster operations and serve as entry points (blue)
+                - 👑💾 **Master+Data Nodes**: Handle both coordination and data (green)
+                - 💾 **Data Nodes**: Store and search data (purple)
+                
+                **Connection Types:**
+                - **Solid lines** (→): Request routing
+                - **Dotted lines** (-.->): Cluster coordination
+                - **Bidirectional** (<-.->): Data replication
+                """)
+                
+                cluster_diagram = generate_cluster_visualization(st.session_state.cluster_config)
+                stmd.st_mermaid(cluster_diagram, height=600)
+                
+            else:  # request_flow
+                st.subheader("🔄 Request Flow")
+                st.markdown("""
+                This diagram shows how requests flow between nodes within your cluster.
+                
+                **Internal Flow:**
+                - **Master Node**: Acts as the coordinator and entry point for requests
+                - **Data Nodes**: Handle actual data operations (search, indexing, storage)
+                
+                **Request Processing:**
+                1. Master node receives and coordinates requests
+                2. Master distributes queries to appropriate data nodes
+                3. Data nodes process operations and return results
+                4. Master aggregates responses from data nodes
+                
+                **Node Communication:**
+                - Master nodes coordinate all cluster operations
+                - Data nodes communicate results back to master nodes
+                - All communication happens within the cluster network
+                """)
+                
+                flow_diagram = generate_request_flow_diagram(st.session_state.cluster_config)
+                stmd.st_mermaid(flow_diagram, height=600)
+            
+            # Architecture insights
+            st.subheader("💡 Architecture Insights")
+            
+            insights = []
+            
+            # Single point of failure check
+            if len(master_eligible) == 1:
+                insights.append("⚠️ **Single Master**: Your cluster has only one master-eligible node. This creates a single point of failure for cluster coordination.")
+            elif len(master_eligible) == 2:
+                insights.append("❌ **Split-brain Risk**: Two master nodes can cause split-brain scenarios. Consider using 1, 3, or 5 master nodes.")
+            else:
+                insights.append(f"✅ **Master High Availability**: {len(master_eligible)} master-eligible nodes provide good fault tolerance.")
+            
+            # Data node distribution
+            if len(data_nodes) == 1:
+                insights.append("⚠️ **Single Data Node**: All data is stored on one node. Consider adding more data nodes for redundancy and performance.")
+            elif len(data_nodes) >= 3:
+                insights.append(f"✅ **Data Distribution**: {len(data_nodes)} data nodes allow for good data distribution and search performance.")
+            
+            # Resource allocation
+            if len(master_only) > 0:
+                insights.append(f"✅ **Dedicated Masters**: {len(master_only)} dedicated master nodes optimize cluster coordination performance.")
+            
+            if len(master_data) > 0 and len(data_only) > 0:
+                insights.append("💡 **Hybrid Architecture**: Mix of master+data and data-only nodes provides flexibility.")
+            
+            # Performance insights
+            if total_capacity > 0:
+                capacity_per_node = total_capacity / len(data_nodes)
+                if capacity_per_node > 1000:  # 1TB per node
+                    insights.append(f"💾 **High Capacity**: ~{capacity_per_node:,.0f}GB average per data node indicates a high-capacity cluster.")
+                
+                if total_search_threads > 50:
+                    insights.append(f"⚡ **High Performance**: {total_search_threads} total search threads indicate strong search performance capability.")
+            
+            for insight in insights:
+                if insight.startswith('✅'):
+                    st.success(insight)
+                elif insight.startswith('⚠️'):
+                    st.warning(insight)
+                elif insight.startswith('❌'):
+                    st.error(insight)
+                else:
+                    st.info(insight)
+
+    with tab4:
         st.header("📄 Generate Configuration Files")
         
         # Mode selection
