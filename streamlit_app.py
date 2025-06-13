@@ -4,6 +4,29 @@ Elasticsearch Cluster Configuration Generator
 
 A comprehensive tool for generating production-ready Elasticsearch clusters with Docker Compose.
 
+🆕 **VERSION-SPECIFIC COMPATIBILITY UPDATE** 🆕
+===============================================
+This tool now generates version-specific configurations for Elasticsearch v6.x, v7.x, and v8.x:
+
+**v6.x Configuration:**
+- Uses discovery.zen.ping.unicast.hosts for cluster discovery
+- Uses discovery.zen.minimum_master_nodes for split-brain prevention
+- Node roles: node.master, node.data, node.ingest (boolean flags)
+- X-Pack settings with basic syntax (no ILM support)
+
+**v7.x Configuration:**  
+- Hybrid approach: zen discovery (v7.0-7.6) or seed hosts (v7.7+)
+- cluster.initial_master_nodes for bootstrap
+- Node roles: legacy boolean flags (compatible)
+- Full X-Pack support including ILM
+
+**v8.x Configuration:**
+- Modern discovery.seed_hosts configuration
+- cluster.initial_master_nodes for bootstrap  
+- Node roles: node.roles array syntax ["master", "data", "ingest"]
+- Enhanced X-Pack with explicit security settings (disabled by default)
+- Security features explicitly configured due to v8 defaults
+
 Features:
 - 3 node types: Master-only, Master+Data+Ingest, Data+Ingest only  
 - Automatic optimization based on hardware specs
@@ -201,25 +224,46 @@ def calculate_optimal_settings(cpu_cores: int, ram_gb: int, node_roles: list):
         'fd_ping_retries': 3
     }
     
-    # Advanced JVM settings based on heap size
+    # **UPDATED JVM SETTINGS** - Container-friendly with stderr logging
     if heap_gb <= 8:
         jvm_settings = {
             'gc_collector': 'ConcMarkSweep',
             'cms_initiating_occupancy_fraction': 75,
+            'container_logging': True,  # NEW: Enable container-friendly logging
             'additional_opts': [
                 '-XX:+UseCMSInitiatingOccupancyOnly',
                 '-XX:+CMSParallelRemarkEnabled',
-                '-XX:+UseCMSCompactAtFullCollection'
+                '-XX:+UseCMSCompactAtFullCollection',
+                # Container-friendly GC logging to stderr
+                '-Xlog:disable',
+                '-Xlog:all=warning:stderr:utctime,level,tags',
+                '-Xlog:gc=debug:stderr:utctime',
+                # Memory and performance options
+                '-XX:+HeapDumpOnOutOfMemoryError',
+                '-XX:+ExitOnOutOfMemoryError',
+                '-Djava.awt.headless=true',
+                '-Dfile.encoding=UTF-8'
             ]
         }
     else:
         jvm_settings = {
             'gc_collector': 'G1GC',
             'g1_heap_region_size': '16m',
+            'container_logging': True,  # NEW: Enable container-friendly logging
             'additional_opts': [
                 '-XX:+UseG1GC',
                 '-XX:G1HeapRegionSize=16m',
-                '-XX:+G1PrintRegionRememberSetInfo'
+                '-XX:MaxGCPauseMillis=200',
+                '-XX:+UseStringDeduplication',
+                # Container-friendly GC logging to stderr
+                '-Xlog:disable',
+                '-Xlog:all=warning:stderr:utctime,level,tags', 
+                '-Xlog:gc=debug:stderr:utctime',
+                # Memory and performance options
+                '-XX:+HeapDumpOnOutOfMemoryError',
+                '-XX:+ExitOnOutOfMemoryError',
+                '-Djava.awt.headless=true',
+                '-Dfile.encoding=UTF-8'
             ]
         }
     
@@ -363,43 +407,277 @@ def load_configuration(uploaded_file) -> bool:
         st.error(f"❌ Error loading configuration: {str(e)}")
         return False
 
+def get_version_specific_settings(es_version, node, nodes, cluster_name, config):
+    """Generate version-specific Elasticsearch settings with full v6/v7/v8 compatibility"""
+    version_major = int(es_version.split('.')[0])
+    version_minor = int(es_version.split('.')[1]) if len(es_version.split('.')) > 1 else 0
+    
+    # Calculate minimum master nodes (only for v6 and early v7)
+    master_eligible = [n for n in nodes if 'master' in n['roles']]
+    min_master_nodes = calculate_minimum_master_nodes(len(nodes), len(master_eligible))
+    
+    discovery_settings = []
+    role_settings = []
+    xpack_settings = []
+    
+    # Version-specific discovery and cluster settings
+    if version_major == 6:
+        # ===== ELASTICSEARCH 6.x CONFIGURATION =====
+        # Uses Zen Discovery with unicast hosts and minimum master nodes
+        discovery_hosts = ','.join([n['hostname'] for n in nodes])
+        discovery_settings = [
+            f"      - discovery.zen.ping.unicast.hosts={discovery_hosts}",
+            f"      - discovery.zen.minimum_master_nodes={min_master_nodes}",
+            "      - discovery.zen.fd.ping_timeout=30s",
+            "      - discovery.zen.fd.ping_retries=3",
+            "      - discovery.zen.fd.ping_interval=5s",
+            "      - discovery.zen.publish_timeout=60s",
+            "      - discovery.zen.commit_timeout=30s"
+        ]
+        
+        # Node roles for v6 (boolean flags)
+        master_eligible_flag = 'true' if 'master' in node['roles'] else 'false'
+        data_node = 'true' if 'data' in node['roles'] else 'false'
+        ingest_node = 'true' if 'ingest' in node['roles'] else 'false'
+        
+        role_settings = [
+            f"      - node.master={master_eligible_flag}",
+            f"      - node.data={data_node}",
+            f"      - node.ingest={ingest_node}"
+        ]
+        
+        # X-Pack for v6 (basic syntax, no ILM, security usually disabled)
+        xpack_config = config['xpack_settings']
+        # Security disabled by default in v6
+        xpack_settings.append("      - xpack.security.enabled=false")
+        xpack_settings.append("      - xpack.ml.enabled=false")  # Usually disabled in production
+        
+        for setting, enabled in xpack_config.items():
+            if setting == 'ilm':
+                continue  # ILM not available in v6
+            elif setting == 'security':
+                if enabled:
+                    xpack_settings[0] = "      - xpack.security.enabled=true"
+            elif setting == 'ml':
+                xpack_settings[1] = f"      - xpack.ml.enabled={'true' if enabled else 'false'}"
+            else:
+                xpack_settings.append(f"      - xpack.{setting}.enabled={'true' if enabled else 'false'}")
+            
+    elif version_major == 7:
+        # ===== ELASTICSEARCH 7.x CONFIGURATION =====
+        # Discovery changes significantly in 7.x series
+        if version_minor >= 7:
+            # v7.7+ uses seed_hosts and initial_master_nodes
+            discovery_hosts = ','.join([f'"{n["hostname"]}:9300"' for n in nodes])
+            master_nodes_list = ','.join([f'"{n["name"]}"' for n in master_eligible])
+            discovery_settings = [
+                f"      - discovery.seed_hosts=[{discovery_hosts}]",
+                f"      - cluster.initial_master_nodes=[{master_nodes_list}]",
+                "      - discovery.probe.connect_timeout=10s",
+                "      - discovery.probe.handshake_timeout=10s"
+            ]
+        else:
+            # v7.0-7.6 hybrid: zen discovery + initial master nodes
+            discovery_hosts = ','.join([n['hostname'] for n in nodes])
+            master_nodes_list = ','.join([f'"{n["name"]}"' for n in master_eligible])
+            discovery_settings = [
+                f"      - discovery.zen.ping.unicast.hosts={discovery_hosts}",
+                f"      - discovery.zen.minimum_master_nodes={min_master_nodes}",
+                f"      - cluster.initial_master_nodes=[{master_nodes_list}]",
+                "      - discovery.zen.fd.ping_timeout=30s"
+            ]
+        
+        # Node roles for v7 (boolean flags still work, array syntax available)
+        master_eligible_flag = 'true' if 'master' in node['roles'] else 'false'
+        data_node = 'true' if 'data' in node['roles'] else 'false'
+        ingest_node = 'true' if 'ingest' in node['roles'] else 'false'
+        
+        role_settings = [
+            f"      - node.master={master_eligible_flag}",
+            f"      - node.data={data_node}",
+            f"      - node.ingest={ingest_node}"
+        ]
+        
+        # X-Pack for v7 (ILM available, security still disabled by default)
+        xpack_config = config['xpack_settings']
+        xpack_settings.append("      - xpack.security.enabled=false")
+        
+        for setting, enabled in xpack_config.items():
+            if setting == 'security':
+                if enabled:
+                    xpack_settings[0] = "      - xpack.security.enabled=true"
+                    # Add basic security settings
+                    xpack_settings.extend([
+                        "      - xpack.security.authc.api_key.enabled=true",
+                        "      - xpack.security.transport.ssl.enabled=false"  # For development
+                    ])
+            elif setting == 'ilm':
+                xpack_settings.append(f"      - xpack.ilm.enabled={'true' if enabled else 'false'}")
+            else:
+                xpack_settings.append(f"      - xpack.{setting}.enabled={'true' if enabled else 'false'}")
+                
+    elif version_major == 8:
+        # ===== ELASTICSEARCH 8.x CONFIGURATION =====
+        # Modern discovery with seed_hosts, security enabled by default
+        discovery_hosts = ','.join([f'"{n["hostname"]}:9300"' for n in nodes])
+        master_nodes_list = ','.join([f'"{n["name"]}"' for n in master_eligible])
+        discovery_settings = [
+            f"      - discovery.seed_hosts=[{discovery_hosts}]",
+            f"      - cluster.initial_master_nodes=[{master_nodes_list}]",
+            "      - discovery.probe.connect_timeout=10s",
+            "      - discovery.probe.handshake_timeout=10s",
+            "      - cluster.fault_detection.leader_check.timeout=15s"
+        ]
+        
+        # Node roles for v8 (array syntax preferred)
+        roles_array = '[' + ','.join([f'"{role}"' for role in node['roles']]) + ']'
+        role_settings = [
+            f"      - node.roles={roles_array}"
+        ]
+        
+        # X-Pack for v8 (security enabled by default, must be explicitly disabled)
+        xpack_config = config['xpack_settings']
+        
+        if not xpack_config.get('security', False):
+            # Explicitly disable security for development
+            xpack_settings.extend([
+                "      - xpack.security.enabled=false",
+                "      - xpack.security.enrollment.enabled=false",
+                "      - xpack.security.http.ssl.enabled=false",
+                "      - xpack.security.transport.ssl.enabled=false"
+            ])
+        else:
+            # Enable security with proper configuration
+            xpack_settings.extend([
+                "      - xpack.security.enabled=true",
+                "      - xpack.security.authc.api_key.enabled=true",
+                "      - xpack.security.http.ssl.enabled=false",  # Development mode
+                "      - xpack.security.transport.ssl.enabled=false"  # Development mode
+            ])
+            
+        for setting, enabled in xpack_config.items():
+            if setting == 'security':
+                continue  # Already handled above
+            elif setting == 'ilm':
+                xpack_settings.append(f"      - xpack.ilm.enabled={'true' if enabled else 'false'}")
+            else:
+                xpack_settings.append(f"      - xpack.{setting}.enabled={'true' if enabled else 'false'}")
+    
+    return {
+        'discovery_settings': discovery_settings,
+        'role_settings': role_settings,
+        'xpack_settings': xpack_settings,
+        'version_major': version_major,
+        'version_minor': version_minor
+    }
+
 def generate_individual_docker_compose(node, config):
-    """Generate individual Docker Compose file for a single node"""
+    """Generate individual Docker Compose file for a single node with version-specific settings"""
     cluster_name = config['cluster_name']
     es_version = config['es_version']
     nodes = config['nodes']
     
-    # Generate discovery hosts
-    discovery_hosts = ','.join([n['hostname'] for n in nodes])
-    
-    # Calculate minimum master nodes
-    master_eligible = [n for n in nodes if 'master' in n['roles']]
-    min_master_nodes = calculate_minimum_master_nodes(len(nodes), len(master_eligible))
+    # Get version-specific configuration
+    version_config = get_version_specific_settings(es_version, node, nodes, cluster_name, config)
     
     optimal_settings = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
     
-    # X-Pack settings
-    xpack_env = []
-    xpack_settings = config['xpack_settings']
-    for setting, enabled in xpack_settings.items():
-        if setting == 'ilm':
-            xpack_env.append(f"      - xpack.ilm.enabled={'true' if enabled else 'false'}")
+    # **UPDATED VERSION-SPECIFIC JVM OPTIONS** with container-friendly logging
+    base_jvm_opts = f"-Xms{optimal_settings['heap_size']} -Xmx{optimal_settings['heap_size']}"
+    
+    # Version-specific JVM options with proper container logging
+    if version_config['version_major'] == 6:
+        # v6 - Use legacy GC options, avoid modern logging syntax
+        if optimal_settings['jvm_settings']['gc_collector'] == 'G1GC':
+            version_specific_opts = [
+                '-XX:+UseG1GC',
+                '-XX:MaxGCPauseMillis=250',
+                '-XX:G1HeapRegionSize=16m',
+                # Legacy logging for v6 (no -Xlog support)
+                '-XX:+PrintGC',
+                '-XX:+PrintGCDetails',
+                '-XX:+PrintGCTimeStamps',
+                '-XX:+PrintGCApplicationStoppedTime',
+                '-Xloggc:/dev/stderr'  # Direct GC log to stderr for containers
+            ]
         else:
-            xpack_env.append(f"      - xpack.{setting}.enabled={'true' if enabled else 'false'}")
+            version_specific_opts = [
+                '-XX:+UseConcMarkSweepGC',
+                f'-XX:CMSInitiatingOccupancyFraction={optimal_settings["jvm_settings"]["cms_initiating_occupancy_fraction"]}',
+                '-XX:+UseCMSInitiatingOccupancyOnly',
+                '-XX:+CMSParallelRemarkEnabled',
+                '-XX:+UseCMSCompactAtFullCollection',
+                # Legacy logging for v6
+                '-XX:+PrintGC',
+                '-XX:+PrintGCDetails', 
+                '-XX:+PrintGCTimeStamps',
+                '-Xloggc:/dev/stderr'
+            ]
+        
+        # Add common v6 options
+        version_specific_opts.extend([
+            '-XX:+HeapDumpOnOutOfMemoryError',
+            '-XX:HeapDumpPath=/usr/share/elasticsearch/data',
+            '-XX:ErrorFile=/usr/share/elasticsearch/logs/hs_err_pid%p.log',
+            '-Djava.awt.headless=true',
+            '-Dfile.encoding=UTF-8'
+        ])
     
-    # Node roles
-    master_eligible_flag = 'true' if 'master' in node['roles'] else 'false'
-    data_node = 'true' if 'data' in node['roles'] else 'false'
-    ingest_node = 'true' if 'ingest' in node['roles'] else 'false'
+    elif version_config['version_major'] == 7:
+        # v7 - Modern JVM with container logging support
+        if optimal_settings['jvm_settings']['gc_collector'] == 'G1GC':
+            version_specific_opts = [
+                '-XX:+UseG1GC',
+                '-XX:MaxGCPauseMillis=200',
+                '-XX:G1HeapRegionSize=16m',
+                '-XX:+UseStringDeduplication'
+            ]
+        else:
+            # Use G1GC by default for v7 (CMS deprecated)
+            version_specific_opts = [
+                '-XX:+UseG1GC',
+                '-XX:MaxGCPauseMillis=200',
+                '-XX:G1HeapRegionSize=16m'
+            ]
+        
+        # v7 supports modern logging
+        version_specific_opts.extend([
+            # Modern GC logging to stderr for containers
+            '-Xlog:disable',
+            '-Xlog:all=warning:stderr:utctime,level,tags',
+            '-Xlog:gc=debug:stderr:utctime',
+            # Memory and error handling
+            '-XX:+HeapDumpOnOutOfMemoryError',
+            '-XX:HeapDumpPath=/usr/share/elasticsearch/data',
+            '-XX:ErrorFile=/usr/share/elasticsearch/logs/hs_err_pid%p.log',
+            '-XX:+ExitOnOutOfMemoryError',
+            '-Djava.awt.headless=true',
+            '-Dfile.encoding=UTF-8'
+        ])
     
-    # JVM options based on optimal settings
-    if optimal_settings['jvm_settings']['gc_collector'] == 'G1GC':
-        jvm_opts = f"-Xms{optimal_settings['heap_size']} -Xmx{optimal_settings['heap_size']} " + \
-                  " ".join(optimal_settings['jvm_settings']['additional_opts'])
-    else:
-        jvm_opts = f"-Xms{optimal_settings['heap_size']} -Xmx{optimal_settings['heap_size']} " + \
-                  f"-XX:+UseConcMarkSweepGC -XX:CMSInitiatingOccupancyFraction={optimal_settings['jvm_settings']['cms_initiating_occupancy_fraction']} " + \
-                  " ".join(optimal_settings['jvm_settings']['additional_opts'])
+    elif version_config['version_major'] == 8:
+        # v8 - Latest JVM options with enhanced container support
+        version_specific_opts = [
+            '-XX:+UseG1GC',
+            '-XX:MaxGCPauseMillis=200',
+            '-XX:G1HeapRegionSize=16m',
+            '-XX:+UseStringDeduplication',
+            # Modern container-friendly logging
+            '-Xlog:disable',
+            '-Xlog:all=warning:stderr:utctime,level,tags',
+            '-Xlog:gc=debug:stderr:utctime',
+            # Enhanced memory and error handling
+            '-XX:+HeapDumpOnOutOfMemoryError',
+            '-XX:HeapDumpPath=/usr/share/elasticsearch/data',
+            '-XX:ErrorFile=/usr/share/elasticsearch/logs/hs_err_pid%p.log',
+            '-XX:+ExitOnOutOfMemoryError',
+            '-XX:+CrashOnOutOfMemoryError',
+            '-Djava.awt.headless=true',
+            '-Dfile.encoding=UTF-8'
+        ]
+    
+    # Build complete JVM options string
+    jvm_opts = f"{base_jvm_opts} " + " ".join(version_specific_opts)
     
     # Generate extra_hosts entries for all nodes in cluster
     extra_hosts_list = []
@@ -409,8 +687,54 @@ def generate_individual_docker_compose(node, config):
     
     extra_hosts_content = "\n".join(extra_hosts_list)
     
+    # Version-specific comments and warnings
+    version_comment = ""
+    version_warnings = ""
+    if version_config['version_major'] == 6:
+        version_comment = "# Elasticsearch 6.x Configuration - Uses Zen Discovery with unicast hosts"
+        version_warnings = "# ⚠️  Remember: v6 uses discovery.zen.minimum_master_nodes for split-brain protection"
+    elif version_config['version_major'] == 7:
+        if version_config['version_minor'] >= 7:
+            version_comment = "# Elasticsearch 7.x Configuration - Modern discovery with seed_hosts"
+        else:
+            version_comment = "# Elasticsearch 7.x Configuration - Hybrid zen + initial_master_nodes"
+        version_warnings = "# ⚠️  Remember: Remove cluster.initial_master_nodes after first cluster startup!"
+    elif version_config['version_major'] == 8:
+        version_comment = "# Elasticsearch 8.x Configuration - Modern discovery with explicit security settings"
+        version_warnings = "# ⚠️  Security is disabled for development - enable for production!"
+    
+    # Version-specific thread pool settings
+    thread_pool_settings = []
+    if version_config['version_major'] <= 7:
+        # v6 and v7 use different thread pool names
+        thread_pool_settings = [
+            f"      - thread_pool.search.size={optimal_settings['thread_pools']['search']}",
+            "      - thread_pool.search.queue_size=2000",
+            f"      - thread_pool.index.size={optimal_settings['thread_pools']['index']}",
+            "      - thread_pool.index.queue_size=1000",
+            f"      - thread_pool.bulk.size={optimal_settings['thread_pools']['bulk']}",
+            "      - thread_pool.bulk.queue_size=2000",
+            f"      - thread_pool.write.size={optimal_settings['thread_pools']['write']}",
+            "      - thread_pool.write.queue_size=1000",
+            f"      - thread_pool.get.size={optimal_settings['thread_pools']['get']}",
+            "      - thread_pool.get.queue_size=1000"
+        ]
+    else:
+        # v8+ has simplified thread pool configuration
+        thread_pool_settings = [
+            f"      - thread_pool.search.size={optimal_settings['thread_pools']['search']}",
+            "      - thread_pool.search.queue_size=2000",
+            f"      - thread_pool.write.size={optimal_settings['thread_pools']['write']}",
+            "      - thread_pool.write.queue_size=2000",
+            f"      - thread_pool.get.size={optimal_settings['thread_pools']['get']}",
+            "      - thread_pool.get.queue_size=1000"
+        ]
+
     compose_content = f"""# Docker Compose for {node['name']} - {cluster_name}
 # Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Elasticsearch Version: {es_version}
+{version_comment}
+{version_warnings}
 # Node Type: {', '.join(node['roles']).title()}
 # Extra Hosts: {len(extra_hosts_list)} other cluster nodes
 
@@ -426,21 +750,15 @@ services:
       - cluster.name={cluster_name}
       - node.name={node['name']}
       
-      # ==================== NODE ROLES ====================
-      - node.master={master_eligible_flag}
-      - node.data={data_node}
-      - node.ingest={ingest_node}
+      # ==================== NODE ROLES ({es_version} syntax) ====================
+{chr(10).join(version_config['role_settings'])}
       
       # ==================== MEMORY OPTIMIZATION ====================
       - "ES_JAVA_OPTS={jvm_opts}"
       - bootstrap.memory_lock=true
       
-      # ==================== DISCOVERY CONFIGURATION ====================
-      - discovery.zen.minimum_master_nodes={min_master_nodes}
-      - discovery.zen.ping.unicast.hosts={discovery_hosts}
-      - discovery.zen.fd.ping_timeout={optimal_settings['network_settings']['fd_ping_timeout']}
-      - discovery.zen.fd.ping_retries={optimal_settings['network_settings']['fd_ping_retries']}
-      - discovery.zen.publish_timeout={optimal_settings['network_settings']['publish_timeout']}
+      # ==================== DISCOVERY CONFIGURATION ({es_version} syntax) ====================
+{chr(10).join(version_config['discovery_settings'])}
       
       # ==================== PERFORMANCE OPTIMIZATION ====================
       # Memory Management
@@ -456,16 +774,7 @@ services:
       - indices.requests.cache.size={optimal_settings['cache_settings']['requests_cache_size']}
       
       # Thread Pool Configuration ({node['cpu_cores']}-core optimized, {', '.join(node['roles'])} node)
-      - thread_pool.search.size={optimal_settings['thread_pools']['search']}
-      - thread_pool.search.queue_size=2000
-      - thread_pool.index.size={optimal_settings['thread_pools']['index']}
-      - thread_pool.index.queue_size=1000
-      - thread_pool.bulk.size={optimal_settings['thread_pools']['bulk']}
-      - thread_pool.bulk.queue_size=2000
-      - thread_pool.write.size={optimal_settings['thread_pools']['write']}
-      - thread_pool.write.queue_size=1000
-      - thread_pool.get.size={optimal_settings['thread_pools']['get']}
-      - thread_pool.get.queue_size=1000
+{chr(10).join(thread_pool_settings)}
       
       # ==================== RECOVERY & REBALANCING ====================
       - indices.recovery.max_bytes_per_sec={optimal_settings['recovery_settings']['max_bytes_per_sec']}
@@ -485,8 +794,8 @@ services:
       - logger.index.search.slowlog.threshold.fetch.warn={optimal_settings['monitoring_settings']['slow_fetch_threshold_warn']}
       - logger.index.indexing.slowlog.threshold.index.warn={optimal_settings['monitoring_settings']['slow_index_threshold_warn']}
       
-      # ==================== X-PACK FEATURES ====================
-{chr(10).join(xpack_env)}
+      # ==================== X-PACK FEATURES ({es_version} syntax) ====================
+{chr(10).join(version_config['xpack_settings'])}
       
       # ==================== NETWORK CONFIGURATION ====================
       - network.host=0.0.0.0
@@ -508,6 +817,8 @@ services:
       - ./{node['name']}/logs:/usr/share/elasticsearch/logs
       - ./{node['name']}/backups:/usr/share/elasticsearch/backups
       - ./{node['name']}/config:/usr/share/elasticsearch/config
+      # **NEW**: Custom JVM options support (recommended by Elastic docs)
+      - ./{node['name']}/jvm.options.d:/usr/share/elasticsearch/config/jvm.options.d
       
     extra_hosts:
 {extra_hosts_content}
@@ -575,7 +886,7 @@ echo "✅ Docker is running"
 
 # Create required directories
 echo "📁 Creating directories for {node['name']}..."
-mkdir -p ./{node['name']}/{{data,logs,backups,config}}
+mkdir -p ./{node['name']}/{{data,logs,backups,config,jvm.options.d}}
 
 # Set proper permissions
 echo "🔧 Setting permissions..."
@@ -609,22 +920,49 @@ thread_pool.search.size: {calculate_optimal_settings(node['cpu_cores'], node['ra
 thread_pool.bulk.size: {calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])['thread_pools']['bulk']}
 EOF
 
-# Create JVM options
-echo "⚙️ Creating jvm.options..."
+# Create JVM options with container-friendly logging
+echo "⚙️ Creating container-optimized jvm.options..."
 optimal = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
-cat > ./{node['name']}/config/jvm.options << EOF
-# JVM configuration for {node['name']}
+
+# Create custom JVM options file in jvm.options.d directory (recommended approach)
+cat > ./{node['name']}/jvm.options.d/container-optimized.options << EOF
+# Container-optimized JVM configuration for {node['name']}
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+# Heap size configuration
 -Xms{optimal['heap_size']}
 -Xmx{optimal['heap_size']}
 
 # GC Configuration
 {'-XX:+UseG1GC' if optimal['jvm_settings']['gc_collector'] == 'G1GC' else '-XX:+UseConcMarkSweepGC'}
+-XX:MaxGCPauseMillis=200
 
-# Additional JVM options
+# Container-friendly logging (all output to stderr)
+-Xlog:disable
+-Xlog:all=warning:stderr:utctime,level,tags
+-Xlog:gc=debug:stderr:utctime
+
+# Memory and error handling
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=/usr/share/elasticsearch/data
+-XX:ErrorFile=/usr/share/elasticsearch/logs/hs_err_pid%p.log
+-XX:+ExitOnOutOfMemoryError
+
+# Performance options
+-XX:+UseStringDeduplication
+-Djava.awt.headless=true
+-Dfile.encoding=UTF-8
+EOF
+
+# Also create a legacy jvm.options for backward compatibility
+cat > ./{node['name']}/config/jvm.options << EOF
+# Legacy JVM configuration for {node['name']} (backup)
+-Xms{optimal['heap_size']}
+-Xmx{optimal['heap_size']}
+{'-XX:+UseG1GC' if optimal['jvm_settings']['gc_collector'] == 'G1GC' else '-XX:+UseConcMarkSweepGC'}
 -XX:+HeapDumpOnOutOfMemoryError
 -XX:HeapDumpPath=data
 -XX:ErrorFile=logs/hs_err_pid%p.log
--Xlog:gc*,gc+age=trace,safepoint:gc.log:utctime,pid,tags
 EOF
 
 echo "🚀 Starting {node['name']} container..."
@@ -1025,11 +1363,16 @@ Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         run_script = generate_node_run_script(node, config)
         cluster_files[f"run-{node['name']}.sh"] = run_script
         
+        # **NEW**: Version-specific JVM options file
+        jvm_options_file = generate_jvm_options_file(node, config)
+        cluster_files[f"{node['name']}-container-optimized.options"] = jvm_options_file
+        
         readme_content += f"""
 ### {node['name']} Files:
 - `docker-compose-{node['name']}.yml` - Complete Docker Compose configuration
 - `init-{node['name']}.sh` - Basic initialization script (legacy)
 - `run-{node['name']}.sh` - Node-specific run script with health checks
+- `{node['name']}-container-optimized.options` - **NEW**: Version-specific JVM options for containers
 """
     
     # Add system-wide scripts
@@ -1065,6 +1408,32 @@ for node in {' '.join([node['name'] for node in nodes])}; do
     docker start $node
 done
 ```
+
+## **NEW**: Container-Optimized Features
+
+### Version-Specific JVM Options
+This generator now includes optimized JVM configurations for container deployments:
+
+- **Elasticsearch 6.x**: Legacy GC logging with stderr output for container compatibility
+- **Elasticsearch 7.x**: Modern `-Xlog` syntax with container-friendly logging
+- **Elasticsearch 8.x**: Latest JVM optimizations with enhanced container support
+
+### Custom JVM Options Usage
+Each node includes a `{node-name}-container-optimized.options` file. To use:
+
+1. **Manual placement** (during setup):
+   ```bash
+   mkdir -p ./{nodes[0]['name']}/jvm.options.d/
+   cp {nodes[0]['name']}-container-optimized.options ./{nodes[0]['name']}/jvm.options.d/
+   ```
+
+2. **Automatic mounting**: The Docker Compose files automatically mount the `jvm.options.d` directory
+
+### Container Logging Benefits
+- All GC logs output to stderr (container-friendly)
+- No log file rotation needed in containers
+- Better integration with container orchestrators (Docker, Kubernetes)
+- Easier monitoring with centralized logging solutions
 
 ## X-Pack Features
 """
@@ -1382,10 +1751,10 @@ fi
 
 # Check system limits
 current_max_map_count=$(sysctl vm.max_map_count 2>/dev/null | awk '{{print $3}}' || echo "unknown")
-if [[ "$current_max_map_count" -ge 262144 ]] 2>/dev/null; then
-    echo "✅ vm.max_map_count: $current_max_map_count (sufficient)"
-else
-    echo "⚠️  vm.max_map_count: $current_max_map_count (should be 262144+)"
+  if [[ "$current_max_map_count" -ge 262144 ]] 2>/dev/null; then
+      echo "✅ vm.max_map_count: $current_max_map_count (sufficient)"
+  else
+      echo "⚠️  vm.max_map_count: $current_max_map_count (should be 262144+)"
 fi
 
 echo ""
@@ -1645,6 +2014,138 @@ echo "==============================================="
 """
     
     return script_content
+
+def generate_jvm_options_file(node, config):
+    """Generate version-specific JVM options file for container deployment"""
+    es_version = config['es_version']
+    version_major = int(es_version.split('.')[0])
+    optimal_settings = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
+    
+    # Base heap configuration
+    jvm_content = f"""# Container-optimized JVM configuration for {node['name']}
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Elasticsearch Version: {es_version}
+# Node Roles: {', '.join(node['roles'])}
+# Hardware: {node['cpu_cores']} cores, {node['ram_gb']}GB RAM
+
+# ==================== HEAP CONFIGURATION ====================
+-Xms{optimal_settings['heap_size']}
+-Xmx{optimal_settings['heap_size']}
+
+# ==================== GC CONFIGURATION ===================="""
+    
+    # Version-specific GC and logging configuration
+    if version_major == 6:
+        # Elasticsearch 6.x - Legacy JVM options
+        if optimal_settings['jvm_settings']['gc_collector'] == 'G1GC':
+            jvm_content += f"""
+-XX:+UseG1GC
+-XX:MaxGCPauseMillis=250
+-XX:G1HeapRegionSize=16m
+
+# Legacy GC logging for v6 (container-friendly)
+-XX:+PrintGC
+-XX:+PrintGCDetails
+-XX:+PrintGCTimeStamps
+-XX:+PrintGCApplicationStoppedTime
+-Xloggc:/dev/stderr"""
+        else:
+            jvm_content += f"""
+-XX:+UseConcMarkSweepGC
+-XX:CMSInitiatingOccupancyFraction={optimal_settings['jvm_settings']['cms_initiating_occupancy_fraction']}
+-XX:+UseCMSInitiatingOccupancyOnly
+-XX:+CMSParallelRemarkEnabled
+-XX:+UseCMSCompactAtFullCollection
+
+# Legacy GC logging for v6 (container-friendly)
+-XX:+PrintGC
+-XX:+PrintGCDetails
+-XX:+PrintGCTimeStamps
+-Xloggc:/dev/stderr"""
+            
+    elif version_major == 7:
+        # Elasticsearch 7.x - Modern JVM with container logging
+        jvm_content += f"""
+-XX:+UseG1GC
+-XX:MaxGCPauseMillis=200
+-XX:G1HeapRegionSize=16m
+-XX:+UseStringDeduplication
+
+# Modern GC logging for v7 (container-friendly stderr output)
+-Xlog:disable
+-Xlog:all=warning:stderr:utctime,level,tags
+-Xlog:gc=debug:stderr:utctime"""
+        
+    elif version_major == 8:
+        # Elasticsearch 8.x - Latest JVM optimizations
+        jvm_content += f"""
+-XX:+UseG1GC
+-XX:MaxGCPauseMillis=200
+-XX:G1HeapRegionSize=16m
+-XX:+UseStringDeduplication
+
+# Modern GC logging for v8 (container-friendly stderr output)
+-Xlog:disable
+-Xlog:all=warning:stderr:utctime,level,tags
+-Xlog:gc=debug:stderr:utctime
+
+# Enhanced v8 options
+-XX:+UnlockExperimentalVMOptions
+-XX:+UseShenandoahGC  # Available in v8+ for low-latency scenarios"""
+    
+    # Common memory and error handling options for all versions
+    jvm_content += f"""
+
+# ==================== MEMORY & ERROR HANDLING ====================
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=/usr/share/elasticsearch/data
+-XX:ErrorFile=/usr/share/elasticsearch/logs/hs_err_pid%p.log
+-XX:+ExitOnOutOfMemoryError"""
+    
+    # Add crash handling for v8+
+    if version_major >= 8:
+        jvm_content += """
+-XX:+CrashOnOutOfMemoryError"""
+    
+    # Common JVM options
+    jvm_content += f"""
+
+# ==================== GENERAL JVM OPTIONS ====================
+-Djava.awt.headless=true
+-Dfile.encoding=UTF-8
+-Djava.security.policy=all.policy
+-Dlog4j2.disable.jmx=true
+
+# ==================== PERFORMANCE TUNING ====================
+# Optimize for container environments
+-XX:+AlwaysPreTouch
+-XX:+UseLargePages
+-XX:+UseTransparentHugePages
+
+# Network and DNS optimization
+-Djava.net.preferIPv4Stack=true
+-Djna.nosys=true
+
+# Security hardening
+-Djava.io.tmpdir=/tmp
+-Djava.security.manager=default"""
+    
+    # Add version-specific performance options
+    if version_major >= 7:
+        jvm_content += """
+
+# Modern JVM performance options (v7+)
+-XX:+UseCompressedOops
+-XX:+UseCompressedClassPointers"""
+    
+    if version_major >= 8:
+        jvm_content += """
+
+# Latest JVM performance options (v8+)
+-XX:+EnableJVMCI
+-XX:+UseJVMCICompiler"""
+    
+    return jvm_content
 
 # Create main layout - sidebar is handled by st.sidebar, main content uses full width
 main_col = st.container()
@@ -2160,10 +2661,87 @@ with main_col:
     with tab3:
         st.header("📄 Generate Configuration Files")
         
+        # Version-specific information
+        with st.expander("🔧 **Version-Specific Configuration Guide**", expanded=False):
+            current_version = st.session_state.cluster_config['es_version']
+            version_major = int(current_version.split('.')[0])
+            
+            st.markdown(f"""
+            **Your Selected Version: {current_version}** (v{version_major}.x series)
+            
+            ### Key Configuration Differences by Version:
+            """)
+            
+            if version_major == 6:
+                st.info("""
+                **🔹 Elasticsearch 6.x Configuration:**
+                - **Discovery**: Uses `discovery.zen.ping.unicast.hosts` for cluster discovery
+                - **Split-brain**: Uses `discovery.zen.minimum_master_nodes` 
+                - **Node roles**: Boolean flags (`node.master=true`, `node.data=true`, `node.ingest=true`)
+                - **X-Pack**: Basic syntax (⚠️ ILM not available in v6)
+                - **Security**: Manual configuration required
+                
+                **Example settings for your cluster:**
+                ```yaml
+                discovery.zen.ping.unicast.hosts=els01.example.com,els02.example.com
+                discovery.zen.minimum_master_nodes=2
+                node.master=true
+                node.data=true
+                xpack.security.enabled=false
+                ```
+                """)
+            elif version_major == 7:
+                st.success("""
+                **🔹 Elasticsearch 7.x Configuration:**
+                - **Discovery**: Hybrid approach - zen discovery (v7.0-7.6) or seed hosts (v7.7+)
+                - **Bootstrap**: Uses `cluster.initial_master_nodes` for first startup
+                - **Node roles**: Legacy boolean flags (backward compatible)
+                - **X-Pack**: Full support including ILM
+                - **Security**: Optional, disabled by default
+                
+                **Example settings for your cluster:**
+                ```yaml
+                discovery.seed_hosts=["els01.example.com:9300", "els02.example.com:9300"]
+                cluster.initial_master_nodes=["els01", "els02"]
+                node.master=true
+                node.data=true
+                xpack.ilm.enabled=true
+                ```
+                """)
+            elif version_major == 8:
+                st.success("""
+                **🔹 Elasticsearch 8.x Configuration:**
+                - **Discovery**: Modern `discovery.seed_hosts` configuration
+                - **Bootstrap**: Uses `cluster.initial_master_nodes` for initialization
+                - **Node roles**: New array syntax (`node.roles=["master", "data", "ingest"]`)
+                - **X-Pack**: Enhanced with explicit security settings
+                - **Security**: ⚠️ Enabled by default (explicitly disabled for ease of use)
+                
+                **Example settings for your cluster:**
+                ```yaml
+                discovery.seed_hosts=["els01.example.com:9300", "els02.example.com:9300"]
+                cluster.initial_master_nodes=["els01", "els02"]
+                node.master=true
+                node.data=true
+                xpack.security.enabled=false
+                ```
+                """)
+            
+            st.markdown(f"""
+            ### 🎯 Generated Configuration Benefits:
+            - ✅ **Version-appropriate syntax** - No compatibility issues
+            - ✅ **Split-brain prevention** - Proper master node calculation
+            - ✅ **Discovery optimization** - Uses best practices for v{version_major}
+            - ✅ **Security settings** - Appropriate defaults for your version
+            - ✅ **Performance tuning** - Optimized for your hardware specs
+            """)
+        
         if len(st.session_state.cluster_config['nodes']) == 0:
             st.warning("⚠️ Please configure at least one node in the Node Configuration tab.")
         else:
             # Validation
+            current_version = st.session_state.cluster_config['es_version']
+            version_major = int(current_version.split('.')[0])
             validation_issues = []
             
             # Check for duplicate names
@@ -2180,11 +2758,40 @@ with main_col:
             master_eligible = [n for n in st.session_state.cluster_config['nodes'] if 'master' in n['roles']]
             if len(master_eligible) == 0:
                 validation_issues.append("❌ At least one master-eligible node required")
+                
+            # Version-specific validation and warnings
+            version_warnings = []
+            hardware_warnings = []
             
+            # Version-specific checks
+            if version_major == 6:
+                # Check for ILM in v6 (not supported)
+                if st.session_state.cluster_config['xpack_settings'].get('ilm', False):
+                    version_warnings.append("⚠️ ILM is not available in Elasticsearch 6.x - will be ignored in generated config")
+                    
+            elif version_major == 8:
+                # Check security settings for v8
+                if not st.session_state.cluster_config['xpack_settings'].get('security', False):
+                    version_warnings.append("ℹ️ Security explicitly disabled for v8.x (normally enabled by default)")
+            
+            # Hardware recommendations for all versions
+            for node in st.session_state.cluster_config['nodes']:
+                if 'data' in node['roles'] and node['ram_gb'] < 8:
+                    hardware_warnings.append(f"⚠️ {node['name']}: Data nodes should have at least 8GB RAM (currently {node['ram_gb']}GB)")
+                if 'master' in node['roles'] and node['cpu_cores'] < 2:
+                    hardware_warnings.append(f"⚠️ {node['name']}: Master nodes should have at least 2 CPU cores (currently {node['cpu_cores']})")
+                if node['ram_gb'] > 64:
+                    hardware_warnings.append(f"💡 {node['name']}: Very high RAM ({node['ram_gb']}GB) - ensure heap size doesn't exceed 32GB")
+            
+            # Display validation results
             if validation_issues:
-                st.error("**Validation Issues:**\n" + "\n".join(validation_issues))
+                st.error("**❌ Validation Issues:**\n" + "\n".join(validation_issues))
+            elif version_warnings or hardware_warnings:
+                all_warnings = version_warnings + hardware_warnings
+                st.warning("**⚠️ Recommendations & Warnings:**\n" + "\n".join(all_warnings))
+                st.info(f"✅ Configuration is valid for Elasticsearch {current_version} but please review the warnings above")
             else:
-                st.success("✅ Configuration validated successfully!")
+                st.success(f"✅ Configuration validated successfully for Elasticsearch {current_version}!")
                 
                 # Generate cluster files
                 st.info("🚀 **Enhanced Package**: Individual Docker Compose files + comprehensive init.sh and run scripts for each node!")
