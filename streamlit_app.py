@@ -87,10 +87,70 @@ NODE_ROLES = {
     }
 }
 
+def calculate_production_memory_limits(total_ram_gb: int, environment: str = "production"):
+    """
+    Calculate production-grade Docker memory limits for dedicated Elasticsearch servers
+    
+    Formula: 
+    - Heap = min(Total_RAM × 0.50, 31GB)  # ES Best Practice: 50% of system RAM
+    - Container = Heap + Off-heap buffer + OS Reserve
+    
+    Args:
+        total_ram_gb: Total system RAM in GB
+        environment: production, staging, or development
+    
+    Returns:
+        dict with container_limit_gb, heap_size_gb, os_reserve_gb, etc.
+    """
+    # Elasticsearch Heap Size Formula: min(Total_RAM × 0.50, 31GB)
+    # This follows ES best practice: heap should be 50% of SYSTEM RAM, not container
+    heap_size_gb = min(total_ram_gb * 0.50, 31)
+    
+    # OS Reserve for DEDICATED Elasticsearch servers (minimal requirements)
+    if total_ram_gb <= 16:
+        os_reserve_gb = 1.0      # Minimal for small dedicated servers
+    elif total_ram_gb <= 64:
+        os_reserve_gb = 1.5      # Adequate for medium dedicated servers  
+    else:
+        os_reserve_gb = 2.0      # Conservative for large dedicated servers
+    
+    # Container needs: Heap + Off-heap buffer (for file system cache, etc.)
+    # For dedicated servers, we can be more aggressive
+    container_limit_gb = total_ram_gb - os_reserve_gb
+    
+    # Calculate off-heap memory (remaining container memory after heap)
+    off_heap_gb = container_limit_gb - heap_size_gb
+    
+    # Safety factor for monitoring (not used in calculation, just for reference)
+    safety_factors = {
+        'development': 0.85,
+        'staging': 0.90,
+        'production': 0.96    # More aggressive for dedicated servers
+    }
+    safety_factor = safety_factors.get(environment.lower(), 0.96)
+    
+    # Round to reasonable values
+    container_limit_gb = round(container_limit_gb, 1)
+    heap_size_gb = round(heap_size_gb, 1)
+    off_heap_gb = round(off_heap_gb, 1)
+    
+    return {
+        'container_limit_gb': container_limit_gb,
+        'heap_size_gb': heap_size_gb,
+        'os_reserve_gb': os_reserve_gb,
+        'safety_factor': safety_factor,
+        'usable_ram_gb': round(total_ram_gb - os_reserve_gb, 1),
+        'off_heap_gb': off_heap_gb
+    }
+
 def calculate_optimal_settings(cpu_cores: int, ram_gb: int, node_roles: list):
-    """Calculate optimal Elasticsearch settings based on hardware"""
-    # Calculate heap size (50% of RAM, max 31GB for compressed OOPs)
-    heap_gb = min(ram_gb // 2, 31)
+    """Calculate optimal Elasticsearch settings based on hardware with production-grade memory limits"""
+    
+    # Calculate production-grade memory limits
+    memory_limits = calculate_production_memory_limits(ram_gb, "production")
+    
+    # Use calculated heap size instead of simple 50% rule
+    heap_gb = memory_limits['heap_size_gb']
     
     # Calculate thread pool sizes based on CPU cores and node roles
     is_master_only = node_roles == ['master']
@@ -228,6 +288,7 @@ def calculate_optimal_settings(cpu_cores: int, ram_gb: int, node_roles: list):
         'jvm_settings': jvm_settings,
         'cluster_settings': cluster_settings,
         'monitoring_settings': monitoring_settings,
+        'production_memory_limits': memory_limits,  # NEW: Production-grade memory calculations
         'capacity_estimates': {
             'data_capacity_gb': heap_gb * 30,  # 1:30 ratio heap to data
             'concurrent_searches': thread_pools['search'] * 100,  # Estimate based on search threads
@@ -726,8 +787,10 @@ services:"""
         soft: 65536
         hard: 65536
       
-    # ==================== RESOURCE LIMITS ====================
-    mem_limit: {node['ram_gb']}g
+    # ==================== RESOURCE LIMITS (Production-Grade Formula) ====================
+    # Original Request: {node['ram_gb']}GB | Production Limit: {optimal_settings['production_memory_limits']['container_limit_gb']}GB
+    # OS Reserve: {optimal_settings['production_memory_limits']['os_reserve_gb']}GB | Safety Factor: {optimal_settings['production_memory_limits']['safety_factor']} | Heap: {optimal_settings['production_memory_limits']['heap_size_gb']}GB
+    mem_limit: {optimal_settings['production_memory_limits']['container_limit_gb']}g
     cpus: '{node['cpu_cores']}.0'
     
     restart: unless-stopped
@@ -1018,8 +1081,10 @@ services:
         soft: 65536
         hard: 65536
       
-    # ==================== RESOURCE LIMITS ====================
-    mem_limit: {node['ram_gb']}g
+    # ==================== RESOURCE LIMITS (Production-Grade Formula) ====================
+    # Original Request: {node['ram_gb']}GB | Production Limit: {optimal_settings['production_memory_limits']['container_limit_gb']}GB
+    # OS Reserve: {optimal_settings['production_memory_limits']['os_reserve_gb']}GB | Safety Factor: {optimal_settings['production_memory_limits']['safety_factor']} | Heap: {optimal_settings['production_memory_limits']['heap_size_gb']}GB
+    mem_limit: {optimal_settings['production_memory_limits']['container_limit_gb']}g
     cpus: '{node['cpu_cores']}.0'
     
     restart: unless-stopped
@@ -1322,8 +1387,10 @@ services:"""
         soft: 65536
         hard: 65536
       
-    # ==================== RESOURCE LIMITS ====================
-    mem_limit: {node['ram_gb']}g
+    # ==================== RESOURCE LIMITS (Production-Grade Formula) ====================
+    # Original Request: {node['ram_gb']}GB | Production Limit: {optimal_settings['production_memory_limits']['container_limit_gb']}GB
+    # OS Reserve: {optimal_settings['production_memory_limits']['os_reserve_gb']}GB | Safety Factor: {optimal_settings['production_memory_limits']['safety_factor']} | Heap: {optimal_settings['production_memory_limits']['heap_size_gb']}GB
+    mem_limit: {optimal_settings['production_memory_limits']['container_limit_gb']}g
     cpus: '{node['cpu_cores']}.0'
     
     restart: unless-stopped
@@ -1720,16 +1787,16 @@ Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     readme_content += f"""
 ## Quick Start Instructions
 
-### Method 1: Complete Setup (Recommended)
+### Method 1: Validation & Run (Recommended)
 1. **Extract all files** to your deployment directory
-2. **Run system initialization** (one-time setup):
+2. **Validate system requirements** (recommended first step):
    ```bash
    chmod +x init.sh
    ./init.sh
    ```
-   This sets up Docker, system limits, permissions, and volumes.
+   This validates Docker, system limits, permissions, and requirements.
 
-3. **Start individual nodes**:
+3. **Start individual nodes** (after addressing any validation issues):
    ```bash
    chmod +x run-*.sh"""
     
@@ -1772,11 +1839,11 @@ Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         init_script = generate_init_script(node, config)
         cluster_files[f"init-{node['name']}.sh"] = init_script
         
-        # System initialization script (comprehensive setup)
+        # System validation script (requirements checking)
         system_init_script = generate_system_init_script(node, config)
         cluster_files[f"init.sh"] = system_init_script
         
-        # Node-specific run script
+        # Node-specific run script with validation
         run_script = generate_node_run_script(node, config)
         cluster_files[f"run-{node['name']}.sh"] = run_script
         
@@ -1788,15 +1855,15 @@ Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 ### {node['name']} Files:
 - `docker-compose-{node['name']}.yml` - Complete Docker Compose configuration
 - `init-{node['name']}.sh` - Basic initialization script (legacy)
-- `run-{node['name']}.sh` - Node-specific run script with health checks
+- `run-{node['name']}.sh` - Node-specific run script with pre-flight validation
 - `{node['name']}-container-optimized.options` - **NEW**: Version-specific JVM options for containers
 """
     
     # Add system-wide scripts
     readme_content += f"""
 ### System-wide Scripts:
-- `init.sh` - Comprehensive system initialization (Docker, permissions, limits)
-- `run-<node>.sh` - Individual node run scripts with validation
+- `init.sh` - System requirements validation script (checks Docker, permissions, limits)
+- `run-<node>.sh` - Individual node run scripts with pre-flight validation
 """
     
     readme_content += """
@@ -1871,17 +1938,15 @@ Each node includes a `{node-name}-container-optimized.options` file. To use:
     return cluster_files
 
 def generate_system_init_script(node, config):
-    """Generate system initialization script for Docker setup, volumes, and permissions"""
+    """Generate system validation script to check requirements without making changes"""
     cluster_name = config['cluster_name']
     
     script_content = f"""#!/bin/bash
-# System Initialization Script for Elasticsearch Node: {node['name']}
+# System Requirements Validation Script for Elasticsearch Node: {node['name']}
 # Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 # Cluster: {cluster_name} | Node: {node['name']} | Roles: {', '.join(node['roles'])}
 
-set -e
-
-echo "🚀 System Initialization for Elasticsearch Node: {node['name']}"
+echo "🔍 System Requirements Validation for Elasticsearch Node: {node['name']}"
 echo "📊 Cluster: {cluster_name}"
 echo "🎭 Roles: {', '.join(node['roles'])}"
 echo "💻 Hardware: {node['cpu_cores']} cores, {node['ram_gb']}GB RAM"
@@ -1893,313 +1958,249 @@ command_exists() {{
     command -v "$1" >/dev/null 2>&1
 }}
 
-# Check if running as root for system modifications
-if [[ $EUID -eq 0 ]]; then
-    echo "⚠️  Running as root - will modify system settings"
-    ROOT_USER=true
-else
-    echo "ℹ️  Running as non-root user"
-    ROOT_USER=false
-fi
+VALIDATION_PASSED=true
 
-# ==================== DOCKER INSTALLATION ====================
+# ==================== DOCKER VALIDATION ====================
 echo "🐳 Checking Docker installation..."
 
 if ! command_exists docker; then
-    echo "❌ Docker not found. Installing Docker..."
-    
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        # Linux installation
-        if command_exists apt-get; then
-            # Ubuntu/Debian
-            sudo apt-get update
-            sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
-            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-            sudo apt-get update
-            sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-        elif command_exists yum; then
-            # CentOS/RHEL
-            sudo yum install -y yum-utils
-            sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-            sudo yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-        elif command_exists dnf; then
-            # Fedora
-            sudo dnf -y install dnf-plugins-core
-            sudo dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
-            sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-        else
-            echo "❌ Unsupported Linux distribution. Please install Docker manually."
-            exit 1
-        fi
-        
-        # Start and enable Docker
-        sudo systemctl start docker
-        sudo systemctl enable docker
-        
-        # Add current user to docker group
-        if [[ "$ROOT_USER" == "false" ]]; then
-            sudo usermod -aG docker $USER
-            echo "⚠️  User added to docker group. Please log out and log back in, or run 'newgrp docker'"
-        fi
-        
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        echo "❌ macOS detected. Please install Docker Desktop manually from https://docker.com/products/docker-desktop"
-        exit 1
-    else
-        echo "❌ Unsupported operating system. Please install Docker manually."
-        exit 1
-    fi
+    echo "❌ Docker not found. Please install Docker."
+    VALIDATION_PASSED=false
 else
-    echo "✅ Docker is already installed"
-fi
-
-# Check if Docker is running
-if ! docker info > /dev/null 2>&1; then
-    echo "🔄 Starting Docker service..."
-    if [[ "$ROOT_USER" == "true" ]]; then
-        systemctl start docker || service docker start
-    else
-        sudo systemctl start docker || sudo service docker start
-    fi
+    echo "✅ Docker is installed"
     
-    # Wait for Docker to be ready
-    echo "⏳ Waiting for Docker to be ready..."
-    for i in {{1..30}}; do
-        if docker info > /dev/null 2>&1; then
-            echo "✅ Docker is ready!"
-            break
-        fi
-        echo "⏳ Waiting... ($i/30)"
-        sleep 2
-    done
-    
+    # Check if Docker is running
     if ! docker info > /dev/null 2>&1; then
-        echo "❌ Docker failed to start"
-        exit 1
+        echo "❌ Docker is not running. Please start Docker service."
+        VALIDATION_PASSED=false
+    else
+        echo "✅ Docker is running"
+        
+        # Check Docker version
+        DOCKER_VERSION=$(docker --version 2>/dev/null | grep -oP '\\d+\\.\\d+' | head -1)
+        echo "ℹ️  Docker version: $DOCKER_VERSION"
     fi
-else
-    echo "✅ Docker is running"
 fi
 
-# ==================== DOCKER COMPOSE INSTALLATION ====================
+# ==================== DOCKER COMPOSE VALIDATION ====================
 echo "🔧 Checking Docker Compose..."
 
 if ! command_exists docker-compose && ! docker compose version > /dev/null 2>&1; then
-    echo "❌ Docker Compose not found. Installing..."
-    
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        # Install docker-compose
-        sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-        sudo chmod +x /usr/local/bin/docker-compose
-        
-        # Create symlink for docker compose (new syntax)
-        sudo ln -sf /usr/local/bin/docker-compose /usr/local/bin/docker-compose
-    else
-        echo "❌ Please install Docker Compose manually"
-        exit 1
-    fi
+    echo "❌ Docker Compose not found. Please install Docker Compose."
+    VALIDATION_PASSED=false
 else
     echo "✅ Docker Compose is available"
+    
+    if command_exists docker-compose; then
+        COMPOSE_VERSION=$(docker-compose --version 2>/dev/null | grep -oP '\\d+\\.\\d+' | head -1)
+        echo "ℹ️  Docker Compose version: $COMPOSE_VERSION"
+    else
+        echo "ℹ️  Using built-in 'docker compose' command"
+    fi
 fi
 
-# ==================== SYSTEM LIMITS CONFIGURATION ====================
-echo "⚙️ Configuring system limits for Elasticsearch..."
+# ==================== SYSTEM LIMITS VALIDATION ====================
+echo "⚙️ Checking system limits for Elasticsearch..."
 
-# Set vm.max_map_count for Elasticsearch
-if [[ "$ROOT_USER" == "true" ]] || sudo -n true 2>/dev/null; then
-    echo "🔧 Setting vm.max_map_count=262144..."
-    
-    # Set for current session
-    if [[ "$ROOT_USER" == "true" ]]; then
-        sysctl -w vm.max_map_count=262144
-    else
-        sudo sysctl -w vm.max_map_count=262144
-    fi
-    
-    # Persist the setting
-    if ! grep -q "vm.max_map_count=262144" /etc/sysctl.conf 2>/dev/null; then
-        if [[ "$ROOT_USER" == "true" ]]; then
-            echo "vm.max_map_count=262144" >> /etc/sysctl.conf
-        else
-            echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
-        fi
-        echo "✅ vm.max_map_count persisted in /etc/sysctl.conf"
-    else
-        echo "✅ vm.max_map_count already configured"
-    fi
+# Check vm.max_map_count
+current_max_map_count=$(sysctl vm.max_map_count 2>/dev/null | awk '{{print $3}}' || echo "0")
+if [[ "$current_max_map_count" -ge 262144 ]] 2>/dev/null; then
+    echo "✅ vm.max_map_count: $current_max_map_count (sufficient)"
 else
-    echo "⚠️  Cannot modify system limits (no sudo access). Please run:"
-    echo "   sudo sysctl -w vm.max_map_count=262144"
-    echo "   echo 'vm.max_map_count=262144' | sudo tee -a /etc/sysctl.conf"
+    echo "❌ vm.max_map_count: $current_max_map_count (required: 262144+)"
+    echo "   To fix: sudo sysctl -w vm.max_map_count=262144"
+    echo "   To persist: echo 'vm.max_map_count=262144' | sudo tee -a /etc/sysctl.conf"
+    VALIDATION_PASSED=false
 fi
 
-# Configure ulimits for the current user
-echo "🔧 Configuring ulimits..."
+# Check ulimits
+echo "📊 Checking file descriptor limits..."
+current_nofile=$(ulimit -n)
+if [[ "$current_nofile" -ge 65536 ]] 2>/dev/null; then
+    echo "✅ File descriptor limit: $current_nofile (sufficient)"
+else
+    echo "⚠️  File descriptor limit: $current_nofile (recommended: 65536+)"
+    echo "   To fix temporarily: ulimit -n 65536"
+    echo "   To persist: Add limits to /etc/security/limits.conf"
+fi
 
-# Check current limits
-echo "📊 Current limits:"
-echo "   Max open files: $(ulimit -n)"
-echo "   Max processes: $(ulimit -u)"
+current_nproc=$(ulimit -u)
+echo "ℹ️  Process limit: $current_nproc"
 
-# Set session limits
-ulimit -n 65536 2>/dev/null || echo "⚠️  Could not set ulimit -n"
-ulimit -u 32768 2>/dev/null || echo "⚠️  Could not set ulimit -u"
-
-# Configure persistent limits
+# Check persistent limits configuration
 LIMITS_CONF="/etc/security/limits.conf"
-if [[ "$ROOT_USER" == "true" ]] || sudo -n true 2>/dev/null; then
-    if [[ -f "$LIMITS_CONF" ]]; then
-        echo "🔧 Configuring persistent limits in $LIMITS_CONF..."
-        
-        # Add limits for elasticsearch user and current user
-        CURRENT_USER=$(whoami)
-        
-        LIMITS_TO_ADD=(
-            "elasticsearch soft nofile 65536"
-            "elasticsearch hard nofile 65536"
-            "elasticsearch soft nproc 32768"
-            "elasticsearch hard nproc 32768"
-            "$CURRENT_USER soft nofile 65536"
-            "$CURRENT_USER hard nofile 65536"
-            "$CURRENT_USER soft nproc 32768"
-            "$CURRENT_USER hard nproc 32768"
-        )
-        
-        for limit in "${{LIMITS_TO_ADD[@]}}"; do
-            if ! grep -q "$limit" "$LIMITS_CONF" 2>/dev/null; then
-                if [[ "$ROOT_USER" == "true" ]]; then
-                    echo "$limit" >> "$LIMITS_CONF"
-                else
-                    echo "$limit" | sudo tee -a "$LIMITS_CONF" > /dev/null
-                fi
-                echo "✅ Added: $limit"
-            fi
-        done
+if [[ -f "$LIMITS_CONF" ]]; then
+    if grep -q "elasticsearch.*nofile.*65536" "$LIMITS_CONF" 2>/dev/null; then
+        echo "✅ Persistent file limits configured in $LIMITS_CONF"
+    else
+        echo "⚠️  No persistent file limits found in $LIMITS_CONF"
+        echo "   Consider adding: elasticsearch soft nofile 65536"
+        echo "                   elasticsearch hard nofile 65536"
     fi
 else
-    echo "⚠️  Cannot modify $LIMITS_CONF (no sudo access)"
+    echo "⚠️  $LIMITS_CONF not found"
 fi
 
-# ==================== DIRECTORY CREATION ====================
-echo "📁 Creating directories for {node['name']}..."
+# ==================== DIRECTORY VALIDATION ====================
+echo "📁 Checking directories for {node['name']}..."
 
-# Create directory structure
+# Required directories
 DIRS=(
     "./{node['name']}"
     "./{node['name']}/data"
     "./{node['name']}/logs"
     "./{node['name']}/backups"
     "./{node['name']}/config"
-    "./{node['name']}/plugins"
 )
 
+missing_dirs=()
 for dir in "${{DIRS[@]}}"; do
     if [[ ! -d "$dir" ]]; then
-        mkdir -p "$dir"
-        echo "✅ Created: $dir"
-    else
-        echo "ℹ️  Exists: $dir"
+        missing_dirs+=("$dir")
     fi
 done
 
-# ==================== PERMISSIONS CONFIGURATION ====================
-echo "🔐 Setting correct permissions..."
-
-# Elasticsearch runs as user 1000:1000 in Docker
-ES_UID=1000
-ES_GID=1000
-
-# Set ownership and permissions
-if [[ "$ROOT_USER" == "true" ]] || sudo -n true 2>/dev/null; then
-    echo "🔧 Setting ownership to $ES_UID:$ES_GID..."
-    
-    if [[ "$ROOT_USER" == "true" ]]; then
-        chown -R $ES_UID:$ES_GID ./{node['name']}/
-        chmod -R 755 ./{node['name']}/
-        chmod -R 777 ./{node['name']}/data
-        chmod -R 777 ./{node['name']}/logs
-        chmod -R 777 ./{node['name']}/backups
-    else
-        sudo chown -R $ES_UID:$ES_GID ./{node['name']}/
-        sudo chmod -R 755 ./{node['name']}/
-        sudo chmod -R 777 ./{node['name']}/data
-        sudo chmod -R 777 ./{node['name']}/logs
-        sudo chmod -R 777 ./{node['name']}/backups
-    fi
-    
-    echo "✅ Permissions set successfully"
+if [[ ${{#missing_dirs[@]}} -eq 0 ]]; then
+    echo "✅ All required directories exist"
 else
-    echo "⚠️  Cannot set ownership (no sudo access). Please run:"
-    echo "   sudo chown -R 1000:1000 ./{node['name']}/"
-    echo "   sudo chmod -R 755 ./{node['name']}/"
-    echo "   sudo chmod -R 777 ./{node['name']}/{{data,logs,backups}}"
+    echo "⚠️  Missing directories: ${{missing_dirs[*]}}"
+    echo "   To create: mkdir -p ${{missing_dirs[*]}}"
 fi
 
-# ==================== VALIDATION ====================
-echo "🔍 Validating setup..."
+# ==================== PERMISSIONS VALIDATION ====================
+echo "🔐 Checking permissions..."
 
-# Check Docker
-if docker info > /dev/null 2>&1; then
-    echo "✅ Docker: Ready"
-else
-    echo "❌ Docker: Not ready"
-fi
-
-# Check Docker Compose
-if command_exists docker-compose || docker compose version > /dev/null 2>&1; then
-    echo "✅ Docker Compose: Available"
-else
-    echo "❌ Docker Compose: Not available"
-fi
-
-# Check directories
-all_dirs_exist=true
-for dir in "${{DIRS[@]}}"; do
-    if [[ ! -d "$dir" ]]; then
-        echo "❌ Directory missing: $dir"
-        all_dirs_exist=false
+# Check if directories are writable
+writable_issues=()
+for dir in "./{node['name']}/data" "./{node['name']}/logs" "./{node['name']}/backups"; do
+    if [[ -d "$dir" ]]; then
+        if [[ ! -w "$dir" ]]; then
+            writable_issues+=("$dir")
+        fi
     fi
 done
 
-if [[ "$all_dirs_exist" == "true" ]]; then
-    echo "✅ Directories: All present"
+if [[ ${{#writable_issues[@]}} -eq 0 ]]; then
+    echo "✅ Directory permissions are correct"
+else
+    echo "❌ Directories not writable: ${{writable_issues[*]}}"
+    echo "   To fix: sudo chown -R 1000:1000 ./{node['name']}/"
+    echo "          sudo chmod -R 777 ./{node['name']}/{{data,logs,backups}}"
+    VALIDATION_PASSED=false
 fi
 
-# Check system limits
-current_max_map_count=$(sysctl vm.max_map_count 2>/dev/null | awk '{{print $3}}' || echo "unknown")
-  if [[ "$current_max_map_count" -ge 262144 ]] 2>/dev/null; then
-      echo "✅ vm.max_map_count: $current_max_map_count (sufficient)"
-  else
-      echo "⚠️  vm.max_map_count: $current_max_map_count (should be 262144+)"
+# ==================== NETWORK VALIDATION ====================
+echo "🌐 Checking network requirements..."
+
+# Check if ports are available
+if command_exists netstat; then
+    HTTP_PORT_USED=$(netstat -tuln 2>/dev/null | grep ":{node['http_port']} " || echo "")
+    TRANSPORT_PORT_USED=$(netstat -tuln 2>/dev/null | grep ":{node['transport_port']} " || echo "")
+    
+    if [[ -z "$HTTP_PORT_USED" ]]; then
+        echo "✅ HTTP port {node['http_port']} is available"
+    else
+        echo "❌ HTTP port {node['http_port']} is already in use"
+        VALIDATION_PASSED=false
+    fi
+    
+    if [[ -z "$TRANSPORT_PORT_USED" ]]; then
+        echo "✅ Transport port {node['transport_port']} is available"
+    else
+        echo "❌ Transport port {node['transport_port']} is already in use"
+        VALIDATION_PASSED=false
+    fi
+else
+    echo "⚠️  netstat not available - cannot check port availability"
 fi
 
+# ==================== MEMORY VALIDATION ====================
+echo "💾 Checking memory requirements..."
+
+# Check available memory
+if [[ -f /proc/meminfo ]]; then
+    TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{{print $2}}')
+    TOTAL_MEM_GB=$((TOTAL_MEM_KB / 1024 / 1024))
+    
+    echo "ℹ️  Total system memory: ${{TOTAL_MEM_GB}}GB"
+    
+    if [[ $TOTAL_MEM_GB -ge {node['ram_gb']} ]]; then
+        echo "✅ Sufficient memory for {node['ram_gb']}GB allocation"
+    else
+        echo "❌ Insufficient memory: ${{TOTAL_MEM_GB}}GB available, {node['ram_gb']}GB required"
+        VALIDATION_PASSED=false
+    fi
+else
+    echo "⚠️  Cannot determine system memory"
+fi
+
+# ==================== DISK SPACE VALIDATION ====================
+echo "💿 Checking disk space..."
+
+if command_exists df; then
+    CURRENT_DIR_SPACE=$(df . | tail -1 | awk '{{print $4}}')
+    CURRENT_DIR_SPACE_GB=$((CURRENT_DIR_SPACE / 1024 / 1024))
+    
+    echo "ℹ️  Available disk space: ${{CURRENT_DIR_SPACE_GB}}GB"
+    
+    # Estimate minimum space needed (conservative estimate)
+    MIN_SPACE_GB=10
+    if [[ $CURRENT_DIR_SPACE_GB -ge $MIN_SPACE_GB ]]; then
+        echo "✅ Sufficient disk space"
+    else
+        echo "❌ Low disk space: ${{CURRENT_DIR_SPACE_GB}}GB available, ${{MIN_SPACE_GB}}GB minimum recommended"
+        VALIDATION_PASSED=false
+    fi
+else
+    echo "⚠️  Cannot check disk space"
+fi
+
+# ==================== FINAL VALIDATION REPORT ====================
 echo ""
 echo "==============================================="
-echo "✅ System initialization for {node['name']} completed!"
-echo ""
-echo "📋 Next steps:"
-echo "1. Run the node-specific run script: ./run-{node['name']}.sh"
-echo "2. Check logs: docker logs {node['name']}"
-echo "3. Monitor health: curl http://{node['ip']}:{node['http_port']}/_cluster/health"
-echo ""
-echo "⚠️  If you see permission errors, you may need to run:"
-echo "   sudo chown -R 1000:1000 ./{node['name']}/"
+echo "🔍 VALIDATION SUMMARY"
 echo "==============================================="
+
+if [[ "$VALIDATION_PASSED" == "true" ]]; then
+    echo "✅ All system requirements validated successfully!"
+    echo ""
+    echo "📋 System is ready for Elasticsearch deployment:"
+    echo "   ✅ Docker installed and running"
+    echo "   ✅ System limits properly configured"
+    echo "   ✅ Directories and permissions ready"
+    echo "   ✅ Network ports available"
+    echo "   ✅ Sufficient resources"
+    echo ""
+    echo "🚀 Next steps:"
+    echo "   1. Run: ./run-{node['name']}.sh"
+    echo "   2. Monitor: curl http://{node['ip']}:{node['http_port']}/_cluster/health"
+else
+    echo "❌ System requirements validation FAILED!"
+    echo ""
+    echo "📋 Issues found that need to be resolved:"
+    echo "   Please address the ❌ items listed above"
+    echo ""
+    echo "💡 Common fixes:"
+    echo "   • Install Docker: https://docs.docker.com/get-docker/"
+    echo "   • Set vm.max_map_count: sudo sysctl -w vm.max_map_count=262144"
+    echo "   • Create directories: mkdir -p ./{node['name']}/{{data,logs,backups,config}}"
+    echo "   • Fix permissions: sudo chown -R 1000:1000 ./{node['name']}/"
+fi
+
+echo "==============================================="
+exit $([ "$VALIDATION_PASSED" = "true" ] && echo 0 || echo 1)
 """
     
     return script_content
 
 def generate_node_run_script(node, config):
-    """Generate node-specific run script for starting Elasticsearch"""
+    """Generate node-specific run script for starting Elasticsearch with validation-only checks"""
     cluster_name = config['cluster_name']
     
     script_content = f"""#!/bin/bash
 # Run Script for Elasticsearch Node: {node['name']}
 # Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 # Cluster: {cluster_name} | Node: {node['name']} | Roles: {', '.join(node['roles'])}
-
-set -e
 
 echo "🚀 Starting Elasticsearch Node: {node['name']}"
 echo "📊 Cluster: {cluster_name}"
@@ -2213,31 +2214,37 @@ command_exists() {{
     command -v "$1" >/dev/null 2>&1
 }}
 
+VALIDATION_PASSED=true
+VALIDATION_WARNINGS=()
+
 # ==================== PRE-FLIGHT CHECKS ====================
-echo "🔍 Running pre-flight checks..."
+echo "🔍 Running pre-flight validation checks..."
 
 # Check if Docker is running
 if ! docker info > /dev/null 2>&1; then
-    echo "❌ Docker is not running. Please start Docker first or run init script."
-    exit 1
+    echo "❌ Docker is not running. Please start Docker first."
+    VALIDATION_PASSED=false
+else
+    echo "✅ Docker is running"
 fi
-echo "✅ Docker is running"
 
 # Check if Docker Compose is available
 if ! command_exists docker-compose && ! docker compose version > /dev/null 2>&1; then
-    echo "❌ Docker Compose not found. Please install it or run init script."
-    exit 1
+    echo "❌ Docker Compose not found. Please install Docker Compose."
+    VALIDATION_PASSED=false
+else
+    echo "✅ Docker Compose is available"
 fi
-echo "✅ Docker Compose is available"
 
 # Check if compose file exists
 COMPOSE_FILE="docker-compose-{node['name']}.yml"
 if [[ ! -f "$COMPOSE_FILE" ]]; then
     echo "❌ Docker Compose file not found: $COMPOSE_FILE"
-    echo "ℹ️  Please ensure you've extracted all files from the cluster package."
-    exit 1
+    echo "   Please ensure you've extracted all files from the cluster package."
+    VALIDATION_PASSED=false
+else
+    echo "✅ Docker Compose file found: $COMPOSE_FILE"
 fi
-echo "✅ Docker Compose file found: $COMPOSE_FILE"
 
 # ==================== DIRECTORY VALIDATION ====================
 echo "📁 Validating directories for {node['name']}..."
@@ -2251,72 +2258,129 @@ DIRS=(
     "./{node['name']}/config"
 )
 
-missing_dirs=false
+missing_dirs=()
 for dir in "${{DIRS[@]}}"; do
     if [[ ! -d "$dir" ]]; then
-        echo "⚠️  Creating missing directory: $dir"
-        mkdir -p "$dir"
-        missing_dirs=true
+        missing_dirs+=("$dir")
     fi
 done
 
-if [[ "$missing_dirs" == "true" ]]; then
-    echo "ℹ️  Some directories were missing and have been created."
-    echo "ℹ️  Consider running the init script for proper setup."
+if [[ ${{#missing_dirs[@]}} -eq 0 ]]; then
+    echo "✅ All required directories exist"
+else
+    echo "❌ Missing directories: ${{missing_dirs[*]}}"
+    echo "   To create: mkdir -p ${{missing_dirs[*]}}"
+    VALIDATION_PASSED=false
 fi
 
-# ==================== PERMISSIONS CHECK ====================
+# ==================== PERMISSIONS VALIDATION ====================
 echo "🔐 Checking permissions..."
 
-# Check if directories are writable
+# Check if directories are writable (only if they exist)
+writable_issues=()
 for dir in "./{node['name']}/data" "./{node['name']}/logs" "./{node['name']}/backups"; do
-    if [[ ! -w "$dir" ]]; then
-        echo "⚠️  Directory not writable: $dir"
-        echo "🔧 Attempting to fix permissions..."
-        
-        if sudo -n true 2>/dev/null; then
-            sudo chown -R 1000:1000 ./{node['name']}/
-            sudo chmod -R 755 ./{node['name']}/
-            sudo chmod -R 777 ./{node['name']}/data ./{node['name']}/logs ./{node['name']}/backups
-            echo "✅ Permissions fixed"
-        else
-            echo "❌ Cannot fix permissions. Please run:"
-            echo "   sudo chown -R 1000:1000 ./{node['name']}/"
-            echo "   sudo chmod -R 777 ./{node['name']}/{{data,logs,backups}}"
-            echo "   Or run the init script with appropriate privileges."
+    if [[ -d "$dir" ]]; then
+        if [[ ! -w "$dir" ]]; then
+            writable_issues+=("$dir")
         fi
     fi
 done
 
-# ==================== SYSTEM LIMITS CHECK ====================
+if [[ ${{#writable_issues[@]}} -eq 0 ]]; then
+    echo "✅ Directory permissions are correct"
+else
+    echo "❌ Directories not writable: ${{writable_issues[*]}}"
+    echo "   To fix: sudo chown -R 1000:1000 ./{node['name']}/"
+    echo "          sudo chmod -R 777 ./{node['name']}/{{data,logs,backups}}"
+    VALIDATION_PASSED=false
+fi
+
+# ==================== SYSTEM LIMITS VALIDATION ====================
 echo "⚙️ Checking system limits..."
 
 # Check vm.max_map_count
 current_max_map_count=$(sysctl vm.max_map_count 2>/dev/null | awk '{{print $3}}' || echo "0")
-if [[ "$current_max_map_count" -lt 262144 ]] 2>/dev/null; then
-    echo "⚠️  vm.max_map_count is $current_max_map_count (should be 262144+)"
-    echo "🔧 Attempting to fix..."
-    
-    if sudo -n true 2>/dev/null; then
-        sudo sysctl -w vm.max_map_count=262144
-        echo "✅ vm.max_map_count set to 262144"
-    else
-        echo "❌ Cannot set vm.max_map_count. Please run:"
-        echo "   sudo sysctl -w vm.max_map_count=262144"
-        echo "   Or run the init script with appropriate privileges."
-    fi
-else
+if [[ "$current_max_map_count" -ge 262144 ]] 2>/dev/null; then
     echo "✅ vm.max_map_count: $current_max_map_count (sufficient)"
+else
+    echo "❌ vm.max_map_count: $current_max_map_count (required: 262144+)"
+    echo "   To fix: sudo sysctl -w vm.max_map_count=262144"
+    VALIDATION_PASSED=false
 fi
 
 # Check ulimits
 current_nofile=$(ulimit -n)
-if [[ "$current_nofile" -lt 65536 ]] 2>/dev/null; then
-    echo "⚠️  Current ulimit -n: $current_nofile (recommended: 65536+)"
-    ulimit -n 65536 2>/dev/null || echo "❌ Could not increase file descriptor limit"
-else
+if [[ "$current_nofile" -ge 65536 ]] 2>/dev/null; then
     echo "✅ File descriptor limit: $current_nofile (sufficient)"
+else
+    echo "⚠️  File descriptor limit: $current_nofile (recommended: 65536+)"
+    echo "   To fix temporarily: ulimit -n 65536"
+    VALIDATION_WARNINGS+=("File descriptor limit is low")
 fi
+
+# ==================== PORT AVAILABILITY CHECK ====================
+echo "🌐 Checking port availability..."
+
+if command_exists netstat; then
+    HTTP_PORT_USED=$(netstat -tuln 2>/dev/null | grep ":{node['http_port']} " || echo "")
+    TRANSPORT_PORT_USED=$(netstat -tuln 2>/dev/null | grep ":{node['transport_port']} " || echo "")
+    
+    if [[ -z "$HTTP_PORT_USED" ]]; then
+        echo "✅ HTTP port {node['http_port']} is available"
+    else
+        echo "❌ HTTP port {node['http_port']} is already in use"
+        VALIDATION_PASSED=false
+    fi
+    
+    if [[ -z "$TRANSPORT_PORT_USED" ]]; then
+        echo "✅ Transport port {node['transport_port']} is available"
+    else
+        echo "❌ Transport port {node['transport_port']} is already in use"
+        VALIDATION_PASSED=false
+    fi
+else
+    echo "⚠️  netstat not available - cannot check port availability"
+    VALIDATION_WARNINGS+=("Cannot verify port availability")
+fi
+
+# ==================== VALIDATION SUMMARY ====================
+echo ""
+echo "==============================================="
+echo "🔍 PRE-FLIGHT VALIDATION SUMMARY"
+echo "==============================================="
+
+if [[ "$VALIDATION_PASSED" == "false" ]]; then
+    echo "❌ VALIDATION FAILED - Cannot proceed with container startup"
+    echo ""
+    echo "📋 Critical issues found (marked with ❌ above):"
+    echo "   Please resolve all ❌ issues before running this script again"
+    echo ""
+    echo "💡 Common fixes:"
+    echo "   • Start Docker: sudo systemctl start docker"
+    echo "   • Install Docker Compose: https://docs.docker.com/compose/install/"
+    echo "   • Set vm.max_map_count: sudo sysctl -w vm.max_map_count=262144"
+    echo "   • Create directories: mkdir -p ./{node['name']}/{{data,logs,backups,config}}"
+    echo "   • Fix permissions: sudo chown -R 1000:1000 ./{node['name']}/"
+    echo ""
+    echo "💡 Run the validation script for detailed guidance:"
+    echo "   ./init.sh"
+    echo "==============================================="
+    exit 1
+fi
+
+# Show warnings if any
+if [[ ${{#VALIDATION_WARNINGS[@]}} -gt 0 ]]; then
+    echo "⚠️  VALIDATION WARNINGS:"
+    for warning in "${{VALIDATION_WARNINGS[@]}}"; do
+        echo "   • $warning"
+    done
+    echo ""
+    echo "ℹ️  These warnings won't prevent startup but may affect performance"
+    echo ""
+fi
+
+echo "✅ All critical validations passed - proceeding with container startup"
+echo ""
 
 # ==================== CONTAINER MANAGEMENT ====================
 echo "🐳 Managing {node['name']} container..."
@@ -2383,7 +2447,7 @@ for i in {{1..60}}; do
         echo "📋 Troubleshooting steps:"
         echo "   1. Check logs: docker logs {node['name']}"
         echo "   2. Check container status: docker ps -a"
-        echo "   3. Verify permissions on data directories"
+        echo "   3. Run validation script: ./init.sh"
         echo "   4. Check system resources (disk space, memory)"
         exit 1
     fi
@@ -2684,6 +2748,38 @@ with main_col:
         - 3 masters → min 2 (survives 1 failure) 
         - 5 masters → min 3 (survives 2 failures)
         """)
+        
+    with st.expander("🐳 **Dedicated Server Memory Formula**", expanded=False):
+        st.markdown("""
+        **🎯 NEW: Optimized for Dedicated Elasticsearch Servers**
+        
+        Your RAM inputs follow Elasticsearch best practices for dedicated servers:
+        
+        **Core Formulas:**
+        ```
+        ES_Heap = min(Total_RAM × 0.50, 31GB)  # ES Best Practice
+        Container_Limit = Total_RAM - OS_Reserve  # Dedicated server
+        ```
+        
+        **Minimal OS Reserves (Dedicated ES Servers):**
+        - ≤16GB system: 1.0GB reserve
+        - 16-64GB system: 1.5GB reserve  
+        - ≥64GB system: 2.0GB reserve
+        
+        **Example: 32GB Dedicated Server:**
+        - **Total RAM**: 32GB
+        - **ES Heap**: 32GB × 0.50 = 16GB (follows ES 50% rule)
+        - **OS Reserve**: 1.5GB (minimal for dedicated server)
+        - **Container Limit**: 32GB - 1.5GB = 30.5GB
+        - **Off-Heap**: 30.5GB - 16GB = 14.5GB (excellent for file cache!)
+        
+        **Your 31.34GB Server:**
+        - **ES Heap**: 15.7GB (50% of system RAM)
+        - **Container Limit**: ~29.8GB (leaves 1.5GB for OS)
+        - **Off-Heap**: ~14.1GB (great for search performance)
+        
+        ✅ **Benefits**: Maximum ES performance, minimal OS waste, follows ES documentation
+        """)    
 
     tab1, tab2, tab3 = st.tabs(["🔧 Cluster Setup", "🖥️ Node Configuration", "📄 Generate Files"])
 
@@ -2949,8 +3045,10 @@ with main_col:
                                         else:
                                             st.info("💡 **Mixed-role**: Balanced approach for small-medium clusters.")
                                         
-                                        # Quick metrics
+                                        # Quick metrics with corrected memory calculations
+                                        mem_limits = optimal['production_memory_limits']
                                         st.metric("🧠 Heap Size", optimal['heap_size'], f"50% of {node['ram_gb']}GB RAM")
+                                        st.metric("🐳 Container Limit", f"{mem_limits['container_limit_gb']}GB", f"{round((mem_limits['container_limit_gb']/node['ram_gb'])*100, 1)}% of system RAM")
                                         st.metric("🔍 Search Threads", optimal['thread_pools']['search'])
                                         st.metric("📊 Est. Capacity", f"~{optimal['capacity_estimates']['data_capacity_gb']:,}GB")
                                         
@@ -2962,8 +3060,22 @@ with main_col:
                                     with tab2:
                                         st.markdown(f"**Node Type:** {node_type} | **Hardware:** {node['cpu_cores']} cores, {node['ram_gb']}GB RAM")
                                         
+                                        # Production Memory Calculation
+                                        st.markdown("##### 💾 Dedicated Server Memory Formula")
+                                        mem_limits = optimal['production_memory_limits']
+                                        st.info(f"""
+                                        **Elasticsearch Best Practice Applied:**
+                                        - **System RAM**: {node['ram_gb']}GB (your input)
+                                        - **ES Heap**: {mem_limits['heap_size_gb']}GB (50% of system RAM, max 31GB)
+                                        - **OS Reserve**: {mem_limits['os_reserve_gb']}GB (minimal for dedicated server)
+                                        - **Container Limit**: {mem_limits['container_limit_gb']}GB (Docker memory limit)
+                                        - **Off-Heap Memory**: {mem_limits['off_heap_gb']}GB (file cache, buffers)
+                                        
+                                        **Memory Efficiency**: {round((mem_limits['container_limit_gb']/node['ram_gb'])*100, 1)}% of RAM used by Elasticsearch
+                                        """)
+                                        
                                         # Memory Configuration - vertical layout to avoid nesting
-                                        st.markdown("##### 💾 Memory Settings")
+                                        st.markdown("##### ⚙️ Elasticsearch Memory Settings")
                                         st.metric("Index Buffer", optimal['memory_settings']['index_buffer_size'])
                                         st.metric("Total Breaker", optimal['memory_settings']['total_breaker_limit'])
                                         st.metric("Query Cache", optimal['cache_settings']['queries_cache_size'])
@@ -3281,13 +3393,13 @@ with main_col:
                         - `run-<node>.sh` - Node-specific run script with health checks and validation
                         - `init-<node>.sh` - Legacy initialization script (backwards compatibility)
                         
-                        **Key Features:**
-                        - ✅ Docker installation and setup
-                        - ✅ System limits configuration (vm.max_map_count, ulimits)
-                        - ✅ Directory creation and permissions
-                        - ✅ Pre-flight checks and validation
-                        - ✅ Health monitoring and status reporting
-                        - ✅ Automatic hostname resolution between nodes
+                                **Key Features:**
+        - ✅ **Dedicated Server Memory Formula**: ES heap = 50% of system RAM (max 31GB)
+        - ✅ **Optimized Container Limits**: Minimal OS overhead (1-2GB) for dedicated servers
+        - ✅ **Docker validation**: Installation, system limits (vm.max_map_count, ulimits)
+        - ✅ **Directory validation**: Permissions and requirements checking
+        - ✅ **Health monitoring**: Status reporting and port availability checking
+        - ✅ **Production-grade**: 95%+ memory efficiency for dedicated ES servers
                         """)
                 
                 # Generate button text based on mode
@@ -3387,17 +3499,17 @@ with main_col:
                                     
                                     with file_tab2:
                                         st.subheader(f"🚀 Run Script: run-{node['name']}.sh")
-                                        st.markdown("**Purpose**: Start this specific node with comprehensive health checks and validation")
+                                        st.markdown("**Purpose**: Start this specific node with pre-flight validation and health checks")
                                         run_content = generate_node_run_script(node, st.session_state.cluster_config)
                                         st.code(run_content, language='bash')
-                                        st.success("✅ **Features**: Pre-flight checks, directory validation, permissions check, health monitoring")
+                                        st.success("✅ **Features**: Pre-flight validation, requirements checking, container startup, health monitoring")
                                     
                                     with file_tab3:
-                                        st.subheader("⚙️ System Initialization: init.sh")
-                                        st.markdown("**Purpose**: One-time system setup for Docker, permissions, and system limits")
+                                        st.subheader("⚙️ System Validation: init.sh")
+                                        st.markdown("**Purpose**: Validate system requirements (Docker, permissions, system limits)")
                                         init_content = generate_system_init_script(node, st.session_state.cluster_config)
                                         st.code(init_content, language='bash')
-                                        st.info("✅ **Features**: Docker installation, system limits (vm.max_map_count), ulimits, directory creation, permissions")
+                                        st.info("✅ **Features**: Docker validation, system limits checking (vm.max_map_count), directory validation, permissions validation")
                                     
                                     with file_tab4:
                                         st.subheader(f"📜 Legacy Init: init-{node['name']}.sh")
@@ -3411,13 +3523,14 @@ with main_col:
                                     st.info(f"""
                                     📦 **Production Package for {node['name']}**:
                                     - `docker-compose-{node['name']}.yml` - Individual Docker Compose with host networking
-                                    - `run-{node['name']}.sh` - Node-specific run script with validation and health checks
-                                    - `init.sh` - System-wide initialization (Docker, permissions, limits)
+                                    - `run-{node['name']}.sh` - Node-specific run script with pre-flight validation
+                                    - `init.sh` - System requirements validation script
                                     - `init-{node['name']}.sh` - Legacy initialization script
                                     
                                     **Recommended workflow**:
-                                    1. Run `init.sh` once for system setup
-                                    2. Run `run-{node['name']}.sh` to start this node
+                                    1. Run `init.sh` to validate system requirements
+                                    2. Address any validation issues found
+                                    3. Run `run-{node['name']}.sh` to start this node
                                     """)
                     else:
                         st.warning("No nodes configured for preview")
