@@ -1763,7 +1763,7 @@ def generate_cluster_files(config):
     readme_content = f"""# Elasticsearch Cluster: {config['cluster_name']}
 Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-## 📁 Folder Structure
+## 📁 Ultra-Streamlined Folder Structure
 ```
 elasticsearch-cluster/
 ├── README.md                           # This file
@@ -1772,20 +1772,29 @@ elasticsearch-cluster/
 ├── stop-all.sh                         # Stop all nodes
 └── nodes/
     ├── {nodes[0]['name']}/                         # Node 1 folder
-    │   ├── docker-compose.yml             # Docker Compose configuration
+    │   ├── docker-compose.yml             # All configuration (ES + JVM)
     │   ├── run.sh                          # Start this node (with validation)
-    │   ├── container-optimized.options     # JVM options for containers
-    │   ├── init.sh                         # Legacy init script
-    │   └── config/                         # Configuration directory
-    │       └── elasticsearch.yml           # Basic ES configuration
+    │   └── init.sh                         # Legacy init script
     ├── {nodes[1]['name'] if len(nodes) > 1 else 'els02'}/                         # Node 2 folder
     │   ├── docker-compose.yml
     │   ├── run.sh
-    │   ├── container-optimized.options
-    │   ├── init.sh
-    │   └── config/
+    │   └── init.sh
     └── ... (additional nodes)
 ```
+
+## 🎯 Ultra-Streamlined Configuration Approach
+
+This generator uses an **ultra-streamlined approach** that eliminates ALL redundancy:
+
+✅ **Everything in docker-compose.yml**: All ES settings + JVM options via environment variables
+❌ **No separate config files**: No elasticsearch.yml, no JVM options files
+❌ **No configuration redundancy**: Single source of truth
+
+### Benefits:
+- **Maximum simplicity**: Just 3 files per node (compose + scripts + docs)
+- **Zero configuration drift**: Everything in one place
+- **Container-native**: Pure Docker/Kubernetes approach
+- **Production-ready**: Version-optimized settings built into compose files
 
 ## Cluster Overview
 - **Version**: {config['es_version']}
@@ -1941,17 +1950,9 @@ docker-compose restart
         run_script = generate_node_run_script_organized(node, config)
         cluster_files[f"{node_folder}/run.sh"] = run_script
         
-        # Container-optimized JVM options
-        jvm_options_file = generate_jvm_options_file(node, config)
-        cluster_files[f"{node_folder}/container-optimized.options"] = jvm_options_file
-        
         # Legacy init script (for backwards compatibility)
         init_script = generate_init_script_organized(node, config)
         cluster_files[f"{node_folder}/init.sh"] = init_script
-        
-        # Basic elasticsearch.yml configuration
-        es_config = generate_elasticsearch_yml(node, config)
-        cluster_files[f"{node_folder}/config/elasticsearch.yml"] = es_config
         
         # Node-specific README
         node_readme = generate_node_readme(node, config)
@@ -3523,13 +3524,13 @@ def generate_node_readme(node, config):
 - **Network**: {node['ip']}:{node['http_port']}
 - **Heap Size**: {optimal['heap_size']}
 
-## 📁 Files in this Directory
-- `docker-compose.yml` - Complete Docker Compose configuration for this node
+## 📁 Files in this Directory (Ultra-Streamlined)
+- `docker-compose.yml` - **Everything**: All ES + JVM settings via environment variables
 - `run.sh` - Start this node with pre-flight validation and health checks
-- `container-optimized.options` - Version-specific JVM options for containers
 - `init.sh` - Legacy initialization script (backwards compatibility)
-- `config/elasticsearch.yml` - Basic Elasticsearch configuration
 - `README.md` - This file
+
+**Note**: Zero redundancy! Everything (Elasticsearch + JVM settings) is in `docker-compose.yml` - no separate config files at all!
 
 ## 🚀 Quick Start
 
@@ -4405,7 +4406,7 @@ with main_col:
                     
                     with st.expander("📋 **What's Included in Production Package**", expanded=False):
                         st.markdown("""
-                        **📁 Organized Folder Structure:**
+                        **📁 Ultra-Streamlined Folder Structure:**
                         ```
                         elasticsearch-cluster/
                         ├── README.md                    # Complete documentation
@@ -4414,22 +4415,20 @@ with main_col:
                         ├── stop-all.sh                  # Stop all nodes
                         └── nodes/
                             ├── els01/                   # Node 1 folder
-                            │   ├── docker-compose.yml   # Complete container config
-                            │   ├── run.sh               # Start this node
-                            │   ├── container-optimized.options  # JVM options
-                            │   ├── config/elasticsearch.yml     # ES configuration
+                            │   ├── docker-compose.yml   # Everything: ES + JVM settings
+                            │   ├── run.sh               # Start this node with validation
                             │   └── init.sh              # Legacy init script
                             ├── els02/                   # Node 2 folder
                             └── ... (additional nodes)
                         ```
                         
-                        **✨ Container Optimizations:**
-                        - **Version-specific JVM options**: ES 6.x/7.x/8.x container logging
-                        - **Dedicated server memory**: ES heap = 50% of system RAM (max 31GB)
-                        - **Organized deployment**: Each node in its own folder
-                        - **Production validation**: Docker, system limits, permissions
-                        - **Health monitoring**: Automated startup and health checks
-                        - **Easy management**: Copy node folders to respective servers
+                        **✨ Ultra-Streamlined & Zero Redundancy:**
+                        - **Everything in docker-compose**: All ES + JVM settings via environment variables
+                        - **No separate config files**: Zero redundancy, single source of truth
+                        - **Version-optimized**: ES 6.x/7.x/8.x settings built into compose files
+                        - **Production memory limits**: ES heap = 50% of system RAM (max 31GB)
+                        - **Maximum simplicity**: Just 3 files per node
+                        - **Container-native**: Pure Docker/Kubernetes best practices
                         """)
                 
                 # Generate button text based on mode
@@ -4454,7 +4453,7 @@ with main_col:
                     
                     # Download button text based on mode
                     download_text = "📦 Download Development Package" if deployment_mode == "development" else "📦 Download Production Package (Organized Folders)"
-                    help_text = "Contains single Docker Compose file and simple startup script" if deployment_mode == "development" else "Contains organized folders per node with Docker Compose, JVM options, configs, and management scripts"
+                    help_text = "Contains single Docker Compose file and simple startup script" if deployment_mode == "development" else "Contains organized folders per node with ultra-streamlined Docker Compose files (no config redundancy)"
                     
                     st.download_button(
                         label=download_text,
@@ -4558,7 +4557,7 @@ with main_col:
                                         st.markdown(f"**Roles**: {', '.join(node['roles']).title()} | **Hardware**: {node['cpu_cores']} cores, {node['ram_gb']}GB RAM")
                                         
                                         # Create tabs for different file types in this node folder
-                                        file_tabs = st.tabs(["🐳 Docker Compose", "🚀 Run Script", "⚙️ JVM Options", "📝 ES Config", "📋 Node README"])
+                                        file_tabs = st.tabs(["🐳 Docker Compose", "🚀 Run Script", "📋 Node README"])
                                         
                                         with file_tabs[0]:
                                             st.subheader("🐳 docker-compose.yml")
@@ -4576,22 +4575,6 @@ with main_col:
                                             st.success("✅ **Features**: Pre-flight validation, directory auto-creation, health monitoring")
                                         
                                         with file_tabs[2]:
-                                            st.subheader("⚙️ container-optimized.options")
-                                            st.markdown(f"**Location**: `nodes/{node['name']}/container-optimized.options`")
-                                            st.markdown(f"**Purpose**: Version-specific JVM options for {st.session_state.cluster_config['es_version']}")
-                                            jvm_content = generate_jvm_options_file(node, st.session_state.cluster_config)
-                                            st.code(jvm_content, language='bash')
-                                            st.success("✅ **Features**: Container-friendly logging, version-appropriate GC settings, memory optimization")
-                                        
-                                        with file_tabs[3]:
-                                            st.subheader("📝 config/elasticsearch.yml")
-                                            st.markdown(f"**Location**: `nodes/{node['name']}/config/elasticsearch.yml`")
-                                            st.markdown("**Purpose**: Basic Elasticsearch configuration file")
-                                            es_config = generate_elasticsearch_yml(node, st.session_state.cluster_config)
-                                            st.code(es_config, language='yaml')
-                                            st.info("✅ **Features**: Version-specific syntax, role configuration, discovery settings")
-                                        
-                                        with file_tabs[4]:
                                             st.subheader("📋 README.md")
                                             st.markdown(f"**Location**: `nodes/{node['name']}/README.md`")
                                             st.markdown("**Purpose**: Node-specific documentation and management guide")
@@ -4602,11 +4585,9 @@ with main_col:
                                         # Show folder summary
                                         st.markdown("---")
                                         st.success(f"""
-                                        📦 **Folder: nodes/{node['name']}/**
-                                        - `docker-compose.yml` - Complete container configuration
+                                        📦 **Folder: nodes/{node['name']}/** (Ultra-Streamlined)
+                                        - `docker-compose.yml` - Everything: ES + JVM settings
                                         - `run.sh` - Start this node with validation
-                                        - `container-optimized.options` - Version-specific JVM options
-                                        - `config/elasticsearch.yml` - Basic ES configuration
                                         - `init.sh` - Legacy initialization script
                                         - `README.md` - Node-specific documentation
                                         - `data/`, `logs/`, `backups/` - Volume directories (auto-created)
@@ -4616,11 +4597,11 @@ with main_col:
                             
                             st.markdown("---")
                             st.success(f"""
-                            📦 **Complete Production Package Summary**:
+                            📦 **Complete Ultra-Streamlined Package Summary**:
                             - **Global scripts**: cluster-init.sh, start-all.sh, stop-all.sh, README.md
                             - **Organized folders**: {len(nodes)} node folders under `nodes/` directory
-                            - **Per-node files**: Docker Compose, run scripts, JVM options, configs, documentation
-                            - **Container optimizations**: Version-specific JVM options for ES {st.session_state.cluster_config['es_version']}
+                            - **Per-node files**: Docker Compose (with everything), run scripts, documentation
+                            - **Zero redundancy**: All ES + JVM settings in docker-compose files
                             
                             **Quick Start**: 
                             1. Extract and run `./cluster-init.sh` (validate system)
