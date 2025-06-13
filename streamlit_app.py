@@ -150,8 +150,8 @@ def calculate_optimal_settings(cpu_cores: int, ram_gb: int, node_roles: list):
     # Calculate production-grade memory limits
     memory_limits = calculate_production_memory_limits(ram_gb, "production")
     
-    # Use calculated heap size instead of simple 50% rule
-    heap_gb = memory_limits['heap_size_gb']
+    # Use calculated heap size instead of simple 50% rule, convert to integer for JVM compatibility
+    heap_gb = int(memory_limits['heap_size_gb'])
     
     # Calculate thread pool sizes based on CPU cores and node roles
     is_master_only = node_roles == ['master']
@@ -622,32 +622,18 @@ services:"""
         
         # Version-specific JVM options
         if node_version_config['version_major'] == 6:
-            if optimal_settings['jvm_settings']['gc_collector'] == 'G1GC':
-                version_specific_opts = [
-                    '-XX:+UseG1GC',
-                    '-XX:MaxGCPauseMillis=250',
-                    '-XX:G1HeapRegionSize=16m',
-                    '-XX:+PrintGC',
-                    '-XX:+PrintGCDetails',
-                    '-XX:+PrintGCTimeStamps',
-                    '-Xloggc:/dev/stderr'
-                ]
-            else:
-                version_specific_opts = [
-                    '-XX:+UseConcMarkSweepGC',
-                    f'-XX:CMSInitiatingOccupancyFraction={optimal_settings["jvm_settings"]["cms_initiating_occupancy_fraction"]}',
-                    '-XX:+UseCMSInitiatingOccupancyOnly',
-                    '-XX:+PrintGC',
-                    '-XX:+PrintGCDetails',
-                    '-Xloggc:/dev/stderr'
-                ]
-            
-            version_specific_opts.extend([
+            # ES 6.x - Working template with essential options only
+            version_specific_opts = [
+                '-XX:+UseG1GC',
+                '-XX:MaxGCPauseMillis=250',
+                '-XX:G1HeapRegionSize=16m',
+                '-Xlog:gc:/usr/share/elasticsearch/logs/gc.log:time:filecount=32,filesize=64M',
                 '-XX:+HeapDumpOnOutOfMemoryError',
                 '-XX:HeapDumpPath=/usr/share/elasticsearch/data',
+                '-XX:ErrorFile=/usr/share/elasticsearch/logs/hs_err_pid%p.log',
                 '-Djava.awt.headless=true',
                 '-Dfile.encoding=UTF-8'
-            ])
+            ]
         
         elif node_version_config['version_major'] == 7:
             version_specific_opts = [
@@ -773,10 +759,8 @@ services:"""
       - action.destructive_requires_name={'true' if optimal_settings['cluster_settings']['action_destructive_requires_name'] else 'false'}
       
       # ==================== PERFORMANCE MONITORING ====================
-      - logger.index.search.slowlog.threshold.query.warn={optimal_settings['monitoring_settings']['slow_query_threshold_warn']}
-      - logger.index.search.slowlog.threshold.query.info={optimal_settings['monitoring_settings']['slow_query_threshold_info']}
-      - logger.index.search.slowlog.threshold.fetch.warn={optimal_settings['monitoring_settings']['slow_fetch_threshold_warn']}
-      - logger.index.indexing.slowlog.threshold.index.warn={optimal_settings['monitoring_settings']['slow_index_threshold_warn']}
+      # Note: Slow log settings should be configured via elasticsearch.yml or cluster API
+      # Environment variable format can cause parsing issues in some ES versions
       
       # ==================== X-PACK FEATURES ({es_version} syntax) ====================
 {chr(10).join(node_version_config['xpack_settings'])}
@@ -796,9 +780,9 @@ services:"""
       - "{node['transport_port']}:9300"
       
     volumes:
-      - ./{node['name']}/data:/usr/share/elasticsearch/data
-      - ./{node['name']}/logs:/usr/share/elasticsearch/logs
-      - ./{node['name']}/backups:/usr/share/elasticsearch/backups
+      - ./data:/usr/share/elasticsearch/data
+      - ./logs:/usr/share/elasticsearch/logs
+      - ./backups:/usr/share/elasticsearch/backups
       
     networks:
       - elasticsearch-net
@@ -861,41 +845,19 @@ def generate_individual_docker_compose(node, config):
     
     # Version-specific JVM options with proper container logging
     if version_config['version_major'] == 6:
-        # v6 - Use legacy GC options, avoid modern logging syntax
-        if optimal_settings['jvm_settings']['gc_collector'] == 'G1GC':
-            version_specific_opts = [
-                '-XX:+UseG1GC',
-                '-XX:MaxGCPauseMillis=250',
-                '-XX:G1HeapRegionSize=16m',
-                # Legacy logging for v6 (no -Xlog support)
-                '-XX:+PrintGC',
-                '-XX:+PrintGCDetails',
-                '-XX:+PrintGCTimeStamps',
-                '-XX:+PrintGCApplicationStoppedTime',
-                '-Xloggc:/dev/stderr'  # Direct GC log to stderr for containers
-            ]
-        else:
-            version_specific_opts = [
-                '-XX:+UseConcMarkSweepGC',
-                f'-XX:CMSInitiatingOccupancyFraction={optimal_settings["jvm_settings"]["cms_initiating_occupancy_fraction"]}',
-                '-XX:+UseCMSInitiatingOccupancyOnly',
-                '-XX:+CMSParallelRemarkEnabled',
-                '-XX:+UseCMSCompactAtFullCollection',
-                # Legacy logging for v6
-                '-XX:+PrintGC',
-                '-XX:+PrintGCDetails', 
-                '-XX:+PrintGCTimeStamps',
-                '-Xloggc:/dev/stderr'
-            ]
-        
-        # Add common v6 options
-        version_specific_opts.extend([
+        # ES 6.x with Java 15+ compatibility - Force G1GC (CMS removed in Java 14+)
+        version_specific_opts = [
+            '-XX:+UseG1GC',
+            '-XX:MaxGCPauseMillis=250',
+            '-XX:G1HeapRegionSize=16m',
+            # Modern GC logging for Java 15+ compatibility
+            '-Xlog:gc:/usr/share/elasticsearch/logs/gc.log:time:filecount=32,filesize=64M',
             '-XX:+HeapDumpOnOutOfMemoryError',
             '-XX:HeapDumpPath=/usr/share/elasticsearch/data',
             '-XX:ErrorFile=/usr/share/elasticsearch/logs/hs_err_pid%p.log',
             '-Djava.awt.headless=true',
             '-Dfile.encoding=UTF-8'
-        ])
+        ]
     
     elif version_config['version_major'] == 7:
         # v7 - Modern JVM with container logging support
@@ -1063,10 +1025,8 @@ services:
       - action.destructive_requires_name={'true' if optimal_settings['cluster_settings']['action_destructive_requires_name'] else 'false'}
       
       # ==================== PERFORMANCE MONITORING ====================
-      - logger.index.search.slowlog.threshold.query.warn={optimal_settings['monitoring_settings']['slow_query_threshold_warn']}
-      - logger.index.search.slowlog.threshold.query.info={optimal_settings['monitoring_settings']['slow_query_threshold_info']}
-      - logger.index.search.slowlog.threshold.fetch.warn={optimal_settings['monitoring_settings']['slow_fetch_threshold_warn']}
-      - logger.index.indexing.slowlog.threshold.index.warn={optimal_settings['monitoring_settings']['slow_index_threshold_warn']}
+      # Note: Slow log settings should be configured via elasticsearch.yml or cluster API
+      # Environment variable format can cause parsing issues in some ES versions
       
       # ==================== X-PACK FEATURES ({es_version} syntax) ====================
 {chr(10).join(version_config['xpack_settings'])}
@@ -1087,9 +1047,9 @@ services:
       - "{node['transport_port']}:9300"
       
     volumes:
-      - ./{node['name']}/data:/usr/share/elasticsearch/data
-      - ./{node['name']}/logs:/usr/share/elasticsearch/logs
-      - ./{node['name']}/backups:/usr/share/elasticsearch/backups
+      - ./data:/usr/share/elasticsearch/data
+      - ./logs:/usr/share/elasticsearch/logs
+      - ./backups:/usr/share/elasticsearch/backups
       
     extra_hosts:
 {extra_hosts_content}
@@ -1159,78 +1119,6 @@ echo "✅ Docker is running"
 
 # Note: Docker volumes will auto-create required directories
 echo "📁 Docker will auto-create volume directories on container start"
-
-# Create basic elasticsearch.yml config
-echo "📝 Creating elasticsearch.yml..."
-cat > ./{node['name']}/config/elasticsearch.yml << EOF
-# Elasticsearch configuration for {node['name']}
-cluster.name: {cluster_name}
-node.name: {node['name']}
-network.host: 0.0.0.0
-http.port: 9200
-transport.tcp.port: 9300
-
-# Node roles
-node.master: {'true' if 'master' in node['roles'] else 'false'}
-node.data: {'true' if 'data' in node['roles'] else 'false'}
-node.ingest: {'true' if 'ingest' in node['roles'] else 'false'}
-
-# Discovery (add other nodes here)
-discovery.zen.ping.unicast.hosts: [{', '.join([f'"{n["hostname"]}"' for n in config['nodes']])}]
-
-# Memory lock
-bootstrap.memory_lock: true
-
-# Performance settings
-indices.memory.index_buffer_size: 25%
-thread_pool.search.size: {calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])['thread_pools']['search']}
-thread_pool.bulk.size: {calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])['thread_pools']['bulk']}
-EOF
-
-# Create JVM options with container-friendly logging
-echo "⚙️ Creating container-optimized jvm.options..."
-optimal = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
-
-# Create custom JVM options file in jvm.options.d directory (recommended approach)
-cat > ./{node['name']}/jvm.options.d/container-optimized.options << EOF
-# Container-optimized JVM configuration for {node['name']}
-# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-# Heap size configuration
--Xms{optimal['heap_size']}
--Xmx{optimal['heap_size']}
-
-# GC Configuration
-{'-XX:+UseG1GC' if optimal['jvm_settings']['gc_collector'] == 'G1GC' else '-XX:+UseConcMarkSweepGC'}
--XX:MaxGCPauseMillis=200
-
-# Container-friendly logging (all output to stderr)
--Xlog:disable
--Xlog:all=warning:stderr:utctime,level,tags
--Xlog:gc=debug:stderr:utctime
-
-# Memory and error handling
--XX:+HeapDumpOnOutOfMemoryError
--XX:HeapDumpPath=/usr/share/elasticsearch/data
--XX:ErrorFile=/usr/share/elasticsearch/logs/hs_err_pid%p.log
--XX:+ExitOnOutOfMemoryError
-
-# Performance options
--XX:+UseStringDeduplication
--Djava.awt.headless=true
--Dfile.encoding=UTF-8
-EOF
-
-# Also create a legacy jvm.options for backward compatibility
-cat > ./{node['name']}/config/jvm.options << EOF
-# Legacy JVM configuration for {node['name']} (backup)
--Xms{optimal['heap_size']}
--Xmx{optimal['heap_size']}
-{'-XX:+UseG1GC' if optimal['jvm_settings']['gc_collector'] == 'G1GC' else '-XX:+UseConcMarkSweepGC'}
--XX:+HeapDumpOnOutOfMemoryError
--XX:HeapDumpPath=data
--XX:ErrorFile=logs/hs_err_pid%p.log
-EOF
 
 echo "🚀 Starting {node['name']} container..."
 docker-compose -f docker-compose-{node['name']}.yml up -d
@@ -1366,10 +1254,8 @@ services:"""
       - action.destructive_requires_name={'true' if optimal_settings['cluster_settings']['action_destructive_requires_name'] else 'false'}
       
       # ==================== PERFORMANCE MONITORING ====================
-      - logger.index.search.slowlog.threshold.query.warn={optimal_settings['monitoring_settings']['slow_query_threshold_warn']}
-      - logger.index.search.slowlog.threshold.query.info={optimal_settings['monitoring_settings']['slow_query_threshold_info']}
-      - logger.index.search.slowlog.threshold.fetch.warn={optimal_settings['monitoring_settings']['slow_fetch_threshold_warn']}
-      - logger.index.indexing.slowlog.threshold.index.warn={optimal_settings['monitoring_settings']['slow_index_threshold_warn']}
+      # Note: Slow log settings should be configured via elasticsearch.yml or cluster API
+      # Environment variable format can cause parsing issues in some ES versions
       
       # ==================== X-PACK FEATURES ====================
 {chr(10).join(xpack_env)}
@@ -1390,9 +1276,9 @@ services:"""
       - "{node['transport_port']}:9300"
       
     volumes:
-      - ./{node['name']}/data:/usr/share/elasticsearch/data
-      - ./{node['name']}/logs:/usr/share/elasticsearch/logs
-      - ./{node['name']}/backups:/usr/share/elasticsearch/backups
+      - ./data:/usr/share/elasticsearch/data
+      - ./logs:/usr/share/elasticsearch/logs
+      - ./backups:/usr/share/elasticsearch/backups
       
     networks:
       - elasticsearch-net
@@ -1795,11 +1681,11 @@ elasticsearch-cluster/
     ├── {nodes[0]['name']}/                         # Node 1 folder
     │   ├── docker-compose.yml             # All configuration (ES + JVM)
     │   ├── run.sh                          # Start this node (with validation)
-    │   └── init.sh                         # Legacy init script
+    │   └── README.md                       # Node documentation
     ├── {nodes[1]['name'] if len(nodes) > 1 else 'els02'}/                         # Node 2 folder
     │   ├── docker-compose.yml
     │   ├── run.sh
-    │   └── init.sh
+    │   └── README.md
     └── ... (additional nodes)
 ```
 
@@ -1971,9 +1857,7 @@ docker-compose restart
         run_script = generate_node_run_script_organized(node, config)
         cluster_files[f"{node_folder}/run.sh"] = run_script
         
-        # Legacy init script (for backwards compatibility)
-        init_script = generate_init_script_organized(node, config)
-        cluster_files[f"{node_folder}/init.sh"] = init_script
+
         
         # Node-specific README
         node_readme = generate_node_readme(node, config)
@@ -2157,13 +2041,12 @@ fi
 # ==================== DIRECTORY VALIDATION ====================
 echo "📁 Checking directories for {node['name']}..."
 
-# Required directories
+# Required directories (Docker will auto-create these)
 DIRS=(
     "./{node['name']}"
     "./{node['name']}/data"
     "./{node['name']}/logs"
     "./{node['name']}/backups"
-    "./{node['name']}/config"
 )
 
 missing_dirs=()
@@ -2362,13 +2245,12 @@ fi
 # ==================== DIRECTORY VALIDATION ====================
 echo "📁 Validating directories for {node['name']}..."
 
-# Required directories
+# Required directories (Docker will auto-create these)
 DIRS=(
     "./{node['name']}"
     "./{node['name']}/data"
     "./{node['name']}/logs"
     "./{node['name']}/backups"
-    "./{node['name']}/config"
 )
 
 missing_dirs=()
@@ -2630,32 +2512,14 @@ def generate_jvm_options_file(node, config):
     
     # Version-specific GC and logging configuration
     if version_major == 6:
-        # Elasticsearch 6.x - Legacy JVM options
-        if optimal_settings['jvm_settings']['gc_collector'] == 'G1GC':
-            jvm_content += f"""
+        # ES 6.x - Working template with essential options only
+        jvm_content += f"""
 -XX:+UseG1GC
 -XX:MaxGCPauseMillis=250
 -XX:G1HeapRegionSize=16m
 
-# Legacy GC logging for v6 (container-friendly)
--XX:+PrintGC
--XX:+PrintGCDetails
--XX:+PrintGCTimeStamps
--XX:+PrintGCApplicationStoppedTime
--Xloggc:/dev/stderr"""
-        else:
-            jvm_content += f"""
--XX:+UseConcMarkSweepGC
--XX:CMSInitiatingOccupancyFraction={optimal_settings['jvm_settings']['cms_initiating_occupancy_fraction']}
--XX:+UseCMSInitiatingOccupancyOnly
--XX:+CMSParallelRemarkEnabled
--XX:+UseCMSCompactAtFullCollection
-
-# Legacy GC logging for v6 (container-friendly)
--XX:+PrintGC
--XX:+PrintGCDetails
--XX:+PrintGCTimeStamps
--Xloggc:/dev/stderr"""
+# Working GC logging configuration for ES 6.x
+-Xlog:gc:/usr/share/elasticsearch/logs/gc.log:time:filecount=32,filesize=64M"""
             
     elif version_major == 7:
         # Elasticsearch 7.x - Modern JVM with container logging
@@ -2687,22 +2551,36 @@ def generate_jvm_options_file(node, config):
 -XX:+UnlockExperimentalVMOptions
 -XX:+UseShenandoahGC  # Available in v8+ for low-latency scenarios"""
     
-    # Common memory and error handling options for all versions
-    jvm_content += f"""
+    # Essential options only - following working template
+    if version_major == 6:
+        # ES 6.x - Essential options only from working template
+        jvm_content += f"""
+
+# ==================== MEMORY & ERROR HANDLING ====================
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=/usr/share/elasticsearch/data
+-XX:ErrorFile=/usr/share/elasticsearch/logs/hs_err_pid%p.log
+
+# ==================== ESSENTIAL JVM OPTIONS ====================
+-Djava.awt.headless=true
+-Dfile.encoding=UTF-8"""
+    else:
+        # For ES 7+ keep more options
+        jvm_content += f"""
 
 # ==================== MEMORY & ERROR HANDLING ====================
 -XX:+HeapDumpOnOutOfMemoryError
 -XX:HeapDumpPath=/usr/share/elasticsearch/data
 -XX:ErrorFile=/usr/share/elasticsearch/logs/hs_err_pid%p.log
 -XX:+ExitOnOutOfMemoryError"""
-    
-    # Add crash handling for v8+
-    if version_major >= 8:
-        jvm_content += """
+        
+        # Add crash handling for v8+
+        if version_major >= 8:
+            jvm_content += """
 -XX:+CrashOnOutOfMemoryError"""
-    
-    # Common JVM options
-    jvm_content += f"""
+        
+        # Common JVM options for v7+
+        jvm_content += f"""
 
 # ==================== GENERAL JVM OPTIONS ====================
 -Djava.awt.headless=true
@@ -2713,27 +2591,24 @@ def generate_jvm_options_file(node, config):
 # ==================== PERFORMANCE TUNING ====================
 # Optimize for container environments
 -XX:+AlwaysPreTouch
--XX:+UseLargePages
--XX:+UseTransparentHugePages
 
 # Network and DNS optimization
 -Djava.net.preferIPv4Stack=true
 -Djna.nosys=true
 
 # Security hardening
--Djava.io.tmpdir=/tmp
--Djava.security.manager=default"""
-    
-    # Add version-specific performance options
-    if version_major >= 7:
-        jvm_content += """
+-Djava.io.tmpdir=/tmp"""
+        
+        # Add version-specific performance options
+        if version_major >= 7:
+            jvm_content += """
 
 # Modern JVM performance options (v7+)
 -XX:+UseCompressedOops
 -XX:+UseCompressedClassPointers"""
-    
-    if version_major >= 8:
-        jvm_content += """
+        
+        if version_major >= 8:
+            jvm_content += """
 
 # Latest JVM performance options (v8+)
 -XX:+EnableJVMCI
@@ -3551,7 +3426,7 @@ def generate_node_readme(node, config):
 ## 📁 Files in this Directory (Ultra-Streamlined)
 - `docker-compose.yml` - **Everything**: All ES + JVM settings via environment variables
 - `run.sh` - Start this node with pre-flight validation and health checks
-- `init.sh` - Legacy initialization script (backwards compatibility)
+
 - `README.md` - This file
 
 **Note**: Zero redundancy! Everything (Elasticsearch + JVM settings) is in `docker-compose.yml` - no separate config files at all!
@@ -4575,7 +4450,7 @@ with main_col:
                 **🏭 Production Mode:**
                 - Individual Docker Compose files per node
                 - Host-to-host communication with extra hosts
-                - Advanced initialization and run scripts
+                - Advanced validation and run scripts
                 - Suitable for distributed deployment
                 - Production-ready with health checks
                 """)
@@ -4731,7 +4606,7 @@ with main_col:
                         - ✅ **Local development**: Perfect for testing and development
                         """)
                 else:
-                    st.info("🏭 **Production Package**: Individual Docker Compose files + comprehensive init scripts!")
+                    st.info("🏭 **Production Package**: Individual Docker Compose files + comprehensive run scripts!")
                     
                     with st.expander("📋 **What's Included in Production Package**", expanded=False):
                         st.markdown("""
@@ -4746,7 +4621,7 @@ with main_col:
                             ├── els01/                   # Node 1 folder
                             │   ├── docker-compose.yml   # Everything: ES + JVM settings
                             │   ├── run.sh               # Start this node with validation
-                            │   └── init.sh              # Legacy init script
+                            │   └── README.md            # Node documentation
                             ├── els02/                   # Node 2 folder
                             └── ... (additional nodes)
                         ```
@@ -4917,7 +4792,7 @@ with main_col:
                                         📦 **Folder: nodes/{node['name']}/** (Ultra-Streamlined)
                                         - `docker-compose.yml` - Everything: ES + JVM settings
                                         - `run.sh` - Start this node with validation
-                                        - `init.sh` - Legacy initialization script
+                                        
                                         - `README.md` - Node-specific documentation
                                         - `data/`, `logs/`, `backups/` - Volume directories (auto-created)
                                         
