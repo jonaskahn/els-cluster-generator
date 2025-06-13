@@ -3983,7 +3983,7 @@ with main_col:
         ✅ **Benefits**: Maximum ES performance, minimal OS waste, follows ES documentation
         """)    
 
-    tab1, tab2, tab3, tab4 = st.tabs(["🔧 Cluster Setup", "🖥️ Node Configuration", "📊 Visualize (Experience)", "📄 Generate Files"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔧 Cluster Setup", "🖥️ Node Configuration", "📊 Visualize (Experimental)", "📄 Generate Files"])
 
     with tab1:
         st.header("🔧 Cluster Configuration")
