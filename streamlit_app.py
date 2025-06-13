@@ -3671,7 +3671,7 @@ def generate_cluster_visualization(config):
     
     # Load balancer (if multiple master-eligible nodes)
     if len(all_master_eligible) > 1:
-        mermaid_code += '    LB["Load Balancer|Entry Point"]\n'
+        mermaid_code += '    LB["Load Balancer<br/>Entry Point"]\n'
     
     # Master-eligible nodes
     master_nodes_added = []
@@ -3684,13 +3684,13 @@ def generate_cluster_visualization(config):
         heap_size = optimal['heap_size']
         
         if node['roles'] == ['master']:
-            # Master-only node - simplified label without commas
-            node_label = f"{node['name']}|Master Only|{node['cpu_cores']}C {node['ram_gb']}GB|Heap: {heap_size}"
+            # Master-only node - with line breaks for readability
+            node_label = f"{node['name']}<br/>Master Only<br/>{node['cpu_cores']}C {node['ram_gb']}GB<br/>Heap: {heap_size}"
             mermaid_code += f'    {node_id}["{node_label}"]\n'
         else:
-            # Master + Data node - simplified label
+            # Master + Data node - with line breaks for readability
             capacity = int(optimal['capacity_estimates']['data_capacity_gb'])
-            node_label = f"{node['name']}|Master + Data|{node['cpu_cores']}C {node['ram_gb']}GB|Heap: {heap_size}|~{capacity}GB Data"
+            node_label = f"{node['name']}<br/>Master + Data<br/>{node['cpu_cores']}C {node['ram_gb']}GB<br/>Heap: {heap_size}<br/>~{capacity}GB Data"
             mermaid_code += f'    {node_id}["{node_label}"]\n'
     
     # Data-only nodes
@@ -3704,7 +3704,7 @@ def generate_cluster_visualization(config):
         capacity = int(optimal['capacity_estimates']['data_capacity_gb'])
         search_threads = optimal['thread_pools']['search']
         
-        node_label = f"{node['name']}|Data + Ingest|{node['cpu_cores']}C {node['ram_gb']}GB|Heap: {heap_size}|~{capacity}GB Data|{search_threads} Search Threads"
+        node_label = f"{node['name']}<br/>Data + Ingest<br/>{node['cpu_cores']}C {node['ram_gb']}GB<br/>Heap: {heap_size}<br/>~{capacity}GB Data<br/>{search_threads} Search Threads"
         mermaid_code += f'    {node_id}["{node_label}"]\n'
     
     # Connect to master nodes
@@ -3788,40 +3788,38 @@ def generate_request_flow_diagram(config):
         heap_size = optimal_master['heap_size']
         
         if master_node['roles'] == ['master']:
-            master_label = f"{master_node['name']}|Master Only|{master_node['cpu_cores']}C {master_node['ram_gb']}GB|Entry Point"
+            master_label = f"{master_node['name']}<br/>Master Only<br/>{master_node['cpu_cores']}C {master_node['ram_gb']}GB<br/>Entry Point"
         else:
             capacity = int(optimal_master['capacity_estimates']['data_capacity_gb'])
-            master_label = f"{master_node['name']}|Master + Data|{master_node['cpu_cores']}C {master_node['ram_gb']}GB|Entry Point"
+            master_label = f"{master_node['name']}<br/>Master + Data<br/>{master_node['cpu_cores']}C {master_node['ram_gb']}GB<br/>Entry Point"
             
         mermaid_code += f'    Master["{master_label}"]\n'
     
-    # Data nodes handle actual data operations
+    # Data nodes handle actual data operations - dynamic for any number of nodes
+    data_node_ids = []
     if data_nodes:
-        for i, node in enumerate(data_nodes[:3]):  # Show up to 3 data nodes
+        for i, node in enumerate(data_nodes):  # Show ALL data nodes
             optimal = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
             capacity = int(optimal['capacity_estimates']['data_capacity_gb'])
             
             node_id = f"Data{i+1}"
-            node_label = f"{node['name']}|Data Node|~{capacity}GB Capacity"
+            data_node_ids.append(node_id)
+            node_label = f"{node['name']}<br/>Data Node<br/>~{capacity}GB Capacity"
             mermaid_code += f'    {node_id}["{node_label}"]\n'
             
             if master_eligible:
                 mermaid_code += f"    Master --> {node_id}\n"
     
-    # Add request flow details with labels
+    # Add request flow details with labels - dynamic for all data nodes
     mermaid_code += "\n    %% Request Flow - Master coordinates with Data Nodes\n"
-    if data_nodes:
-        mermaid_code += '    Master -.->|"Distribute Queries"| Data1\n'
-        if len(data_nodes) > 1:
-            mermaid_code += '    Master -.->|"Distribute Queries"| Data2\n'
-        if len(data_nodes) > 2:
-            mermaid_code += '    Master -.->|"Distribute Queries"| Data3\n'
+    if data_nodes and data_node_ids:
+        # Master distributes queries to all data nodes
+        for node_id in data_node_ids:
+            mermaid_code += f'    Master -.->|"Distribute Queries"| {node_id}\n'
         
-        mermaid_code += '    Data1 -.->|"Return Results"| Master\n'
-        if len(data_nodes) > 1:
-            mermaid_code += '    Data2 -.->|"Return Results"| Master\n'
-        if len(data_nodes) > 2:
-            mermaid_code += '    Data3 -.->|"Return Results"| Master\n'
+        # Data nodes return results to master
+        for node_id in data_node_ids:
+            mermaid_code += f'    {node_id} -.->|"Return Results"| Master\n'
     
     # Styling
     mermaid_code += "\n    classDef master fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px\n"
@@ -3829,8 +3827,9 @@ def generate_request_flow_diagram(config):
     
     mermaid_code += "    class Master master\n"
     
-    for i in range(min(3, len(data_nodes))):
-        mermaid_code += f"    class Data{i+1} data\n"
+    # Apply styling to all data nodes dynamically
+    for node_id in data_node_ids:
+        mermaid_code += f"    class {node_id} data\n"
     
     return mermaid_code
 
@@ -3984,7 +3983,7 @@ with main_col:
         ✅ **Benefits**: Maximum ES performance, minimal OS waste, follows ES documentation
         """)    
 
-    tab1, tab2, tab3, tab4 = st.tabs(["🔧 Cluster Setup", "🖥️ Node Configuration", "📊 Visualize", "📄 Generate Files"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔧 Cluster Setup", "🖥️ Node Configuration", "📊 Visualize (Experience)", "📄 Generate Files"])
 
     with tab1:
         st.header("🔧 Cluster Configuration")
@@ -4441,7 +4440,9 @@ with main_col:
                 """)
                 
                 cluster_diagram = generate_cluster_visualization(st.session_state.cluster_config)
-                stmd.st_mermaid(cluster_diagram, height=600)
+                # Use unique key based on node count and configuration to force refresh
+                diagram_key = f"cluster_arch_{len(st.session_state.cluster_config['nodes'])}_{hash(str(st.session_state.cluster_config))}"
+                stmd.st_mermaid(cluster_diagram, height=600, key=diagram_key)
                 
             else:  # request_flow
                 st.subheader("🔄 Request Flow")
@@ -4465,7 +4466,9 @@ with main_col:
                 """)
                 
                 flow_diagram = generate_request_flow_diagram(st.session_state.cluster_config)
-                stmd.st_mermaid(flow_diagram, height=600)
+                # Use unique key based on node count and configuration to force refresh
+                flow_key = f"request_flow_{len(st.session_state.cluster_config['nodes'])}_{hash(str(st.session_state.cluster_config))}"
+                stmd.st_mermaid(flow_diagram, height=600, key=flow_key)
             
             # Architecture insights
             st.subheader("💡 Architecture Insights")
