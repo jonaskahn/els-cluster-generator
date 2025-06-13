@@ -1,0 +1,358 @@
+# Streamlit .gitignore
+
+# ===========================================
+# STREAMLIT SPECIFIC
+# ===========================================
+# Streamlit cache and session state
+.streamlit/
+*.streamlit/
+.streamlit_cache/
+
+# Streamlit secrets (NEVER commit sensitive data)
+secrets.toml
+.streamlit/secrets.toml
+
+# ===========================================
+# PYTHON
+# ===========================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+.conda/
+conda-meta/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# ===========================================
+# DATA & DATABASES
+# ===========================================
+# Large data files
+*.csv
+*.json
+*.xlsx
+*.xls
+*.parquet
+*.pickle
+*.pkl
+*.h5
+*.hdf5
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Data directories (uncomment if you want to ignore)
+# data/
+# datasets/
+# raw_data/
+# processed_data/
+
+# ===========================================
+# MACHINE LEARNING
+# ===========================================
+# Model files
+*.joblib
+*.model
+*.h5
+*.pb
+*.onnx
+*.tflite
+models/
+checkpoints/
+trained_models/
+
+# MLflow
+mlruns/
+mlflow/
+
+# Weights & Biases
+wandb/
+
+# ===========================================
+# ENVIRONMENT & CONFIG
+# ===========================================
+# Environment variables
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+.env.staging
+
+# Configuration files with sensitive data
+config.ini
+config.yaml
+config.json
+credentials.json
+service-account.json
+
+# ===========================================
+# IDE & EDITORS
+# ===========================================
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# ===========================================
+# OPERATING SYSTEM
+# ===========================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ===========================================
+# LOGS & TEMPORARY FILES
+# ===========================================
+# Logs
+*.log
+logs/
+log/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# ===========================================
+# DEPLOYMENT & CLOUD
+# ===========================================
+# Docker
+Dockerfile.prod
+docker-compose.override.yml
+.dockerignore
+
+# Kubernetes
+*.kubeconfig
+
+# Heroku
+.heroku/
+
+# AWS
+.aws/
+
+# Google Cloud
+.gcloud/
+gcloud-service-key.json
+
+# Azure
+.azure/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# ===========================================
+# PACKAGE MANAGERS
+# ===========================================
+# npm
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Yarn
+.yarn-integrity
+.pnp
+.pnp.js
+
+# ===========================================
+# MISCELLANEOUS
+# ===========================================
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Archive files
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Large media files (uncomment if needed)
+# *.mp4
+# *.avi
+# *.mov
+# *.wmv
+# *.flv
+# *.webm
+# *.mp3
+# *.wav
+# *.flac
+
+# Output files
+output/
+outputs/
+results/
+
+# Cache directories
+.cache/
+cache/
+
+# Test files (uncomment if you don't want to track)
+# test_*.py
+# *_test.py
+# tests/
+
+# ===========================================
+# PROJECT SPECIFIC (CUSTOMIZE AS NEEDED)
+# ===========================================
+# Add your project-specific ignores here
+# uploads/
+# downloads/
+# screenshots/
+# reports/
