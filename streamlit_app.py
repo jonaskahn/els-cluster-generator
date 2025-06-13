@@ -314,6 +314,26 @@ def generate_hostname(node_index: int, domain: str) -> str:
 # Initialize session state after function definitions
 init_session_state()
 
+def trim_config_strings(config):
+    """Trim all string inputs in configuration before generating files"""
+    # Create a copy to avoid modifying original
+    trimmed_config = config.copy()
+    
+    # Trim cluster-level strings
+    trimmed_config['cluster_name'] = config['cluster_name'].strip()
+    trimmed_config['primary_domain'] = config['primary_domain'].strip()
+    
+    # Trim node-level strings
+    trimmed_config['nodes'] = []
+    for node in config['nodes']:
+        trimmed_node = node.copy()
+        trimmed_node['name'] = node['name'].strip()
+        trimmed_node['hostname'] = node['hostname'].strip()
+        trimmed_node['ip'] = node['ip'].strip()
+        trimmed_config['nodes'].append(trimmed_node)
+    
+    return trimmed_config
+
 def save_configuration() -> bytes:
     """Save current configuration to JSON with comprehensive data"""
     
@@ -571,6 +591,9 @@ def get_version_specific_settings(es_version, node, nodes, cluster_name, config)
 
 def generate_development_docker_compose(config):
     """Generate single Docker Compose file for development with all nodes"""
+    # Apply trimming to all input strings
+    config = trim_config_strings(config)
+    
     cluster_name = config['cluster_name']
     es_version = config['es_version']
     nodes = config['nodes']
@@ -1134,14 +1157,8 @@ fi
 
 echo "✅ Docker is running"
 
-# Create required directories
-echo "📁 Creating directories for {node['name']}..."
-mkdir -p ./{node['name']}/{{data,logs,backups,config,jvm.options.d}}
-
-# Set proper permissions
-echo "🔧 Setting permissions..."
-sudo chown -R 1000:1000 ./{node['name']}/
-chmod -R 755 ./{node['name']}/
+# Note: Docker volumes will auto-create required directories
+echo "📁 Docker will auto-create volume directories on container start"
 
 # Create basic elasticsearch.yml config
 echo "📝 Creating elasticsearch.yml..."
@@ -1520,6 +1537,9 @@ ESTIMATED_INDEXING_RATE_DOCS_PER_SEC={optimal_settings['capacity_estimates']['in
 
 def generate_development_files(config):
     """Generate simplified files for development mode"""
+    # Apply trimming to all input strings
+    config = trim_config_strings(config)
+    
     cluster_files = {}
     nodes = config['nodes']
     cluster_name = config['cluster_name']
@@ -1554,7 +1574,7 @@ echo "📁 Creating directories..."
     
     for node in nodes:
         startup_script += f"""
-mkdir -p ./{node['name']}/{{data,logs,backups,config,jvm.options.d}}"""
+echo "📁 Docker will auto-create directories for {node['name']}"""
     
     startup_script += f"""
 
@@ -1663,10 +1683,7 @@ chmod +x start.sh
 
 ### 2. Alternative: Using Docker Compose directly
 ```bash
-# Create directories
-{' && '.join([f'mkdir -p ./{node["name"]}/{{data,logs,backups,config}}' for node in nodes])}
-
-# Start cluster
+# Start cluster (Docker will auto-create directories)
 docker-compose up -d
 
 # Check status
@@ -1754,6 +1771,9 @@ For production deployment:
 
 def generate_cluster_files(config):
     """Generate all files for the cluster organized in folders per node"""
+    # Apply trimming to all input strings
+    config = trim_config_strings(config)
+    
     cluster_files = {}
     nodes = config['nodes']
     
@@ -2276,8 +2296,8 @@ else
     echo "💡 Common fixes:"
     echo "   • Install Docker: https://docs.docker.com/get-docker/"
     echo "   • Set vm.max_map_count: sudo sysctl -w vm.max_map_count=262144"
-    echo "   • Create directories: mkdir -p ./{node['name']}/{{data,logs,backups,config}}"
-    echo "   • Fix permissions: sudo chown -R 1000:1000 ./{node['name']}/"
+    echo "   • Note: Docker will auto-create volume directories on container start"
+    echo "   • Fix permissions if needed: sudo chown -R 1000:1000 ./{node['name']}/"
 fi
 
 echo "==============================================="
@@ -2452,8 +2472,8 @@ if [[ "$VALIDATION_PASSED" == "false" ]]; then
     echo "   • Start Docker: sudo systemctl start docker"
     echo "   • Install Docker Compose: https://docs.docker.com/compose/install/"
     echo "   • Set vm.max_map_count: sudo sysctl -w vm.max_map_count=262144"
-    echo "   • Create directories: mkdir -p ./{node['name']}/{{data,logs,backups,config}}"
-    echo "   • Fix permissions: sudo chown -R 1000:1000 ./{node['name']}/"
+    echo "   • Note: Docker will auto-create volume directories on container start"
+    echo "   • Fix permissions if needed: sudo chown -R 1000:1000 ./{node['name']}/"
     echo ""
     echo "💡 Run the validation script for detailed guidance:"
     echo "   ./init.sh"
@@ -3361,12 +3381,15 @@ echo "⚠️  Note: Consider using run.sh for enhanced functionality"
 echo "==============================================="
 
 # Create directories
-echo "📁 Creating directories..."
-mkdir -p {{data,logs,backups,config}}
+echo "📁 Docker will auto-create volume directories on container start"
 
-# Set basic permissions
-echo "🔐 Setting basic permissions..."
-chmod 755 {{data,logs,backups,config}}
+# Set basic permissions for existing directories
+echo "🔐 Setting basic permissions for any existing directories..."
+for dir in data logs backups config; do
+    if [[ -d "$dir" ]]; then
+        chmod 755 "$dir"
+    fi
+done
 
 # Create basic elasticsearch.yml if it doesn't exist
 if [[ ! -f "config/elasticsearch.yml" ]]; then
