@@ -1752,16 +1752,40 @@ For production deployment:
     return cluster_files
 
 def generate_cluster_files(config):
-    """Generate all files for the cluster (compose, env, init scripts)"""
+    """Generate all files for the cluster organized in folders per node"""
     cluster_files = {}
     nodes = config['nodes']
     
-    # Generate README file
+    # Generate README file for root directory
     master_eligible = [n for n in nodes if 'master' in n['roles']]
     min_master_nodes = calculate_minimum_master_nodes(len(nodes), len(master_eligible))
     
     readme_content = f"""# Elasticsearch Cluster: {config['cluster_name']}
 Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## 📁 Folder Structure
+```
+elasticsearch-cluster/
+├── README.md                           # This file
+├── cluster-init.sh                     # Global system validation
+├── start-all.sh                        # Start all nodes sequentially
+├── stop-all.sh                         # Stop all nodes
+└── nodes/
+    ├── {nodes[0]['name']}/                         # Node 1 folder
+    │   ├── docker-compose.yml             # Docker Compose configuration
+    │   ├── run.sh                          # Start this node (with validation)
+    │   ├── container-optimized.options     # JVM options for containers
+    │   ├── init.sh                         # Legacy init script
+    │   └── config/                         # Configuration directory
+    │       └── elasticsearch.yml           # Basic ES configuration
+    ├── {nodes[1]['name'] if len(nodes) > 1 else 'els02'}/                         # Node 2 folder
+    │   ├── docker-compose.yml
+    │   ├── run.sh
+    │   ├── container-optimized.options
+    │   ├── init.sh
+    │   └── config/
+    └── ... (additional nodes)
+```
 
 ## Cluster Overview
 - **Version**: {config['es_version']}
@@ -1770,7 +1794,7 @@ Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 - **Minimum Master Nodes**: {min_master_nodes}
 - **Domain**: {config['primary_domain']}
 
-## Node Configuration
+## Node Configuration Summary
 """
     
     for i, node in enumerate(nodes):
@@ -1782,89 +1806,156 @@ Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 - **Heap Size**: {optimal['heap_size']}
 - **Ports**: HTTP {node['http_port']}, Transport {node['transport_port']}
 - **Est. Capacity**: ~{optimal['capacity_estimates']['data_capacity_gb']:,}GB
+- **Location**: `nodes/{node['name']}/`
 """
     
     readme_content += f"""
-## Quick Start Instructions
+## 🚀 Quick Start Instructions
 
-### Method 1: Validation & Run (Recommended)
-1. **Extract all files** to your deployment directory
-2. **Validate system requirements** (recommended first step):
-   ```bash
-   chmod +x init.sh
-   ./init.sh
-   ```
-   This validates Docker, system limits, permissions, and requirements.
+### Method 1: Automated Cluster Startup (Recommended)
+```bash
+# 1. Validate system requirements
+chmod +x cluster-init.sh
+./cluster-init.sh
 
-3. **Start individual nodes** (after addressing any validation issues):
-   ```bash
-   chmod +x run-*.sh"""
-    
-    for node in nodes:
-        readme_content += f"""
-   ./run-{node['name']}.sh"""
-    
-    readme_content += f"""
-   ```
+# 2. Start all nodes automatically
+chmod +x start-all.sh
+./start-all.sh
+```
 
-### Method 2: Legacy Approach
-1. **Extract all files** to your deployment directory
-2. **Make init scripts executable**: `chmod +x init-*.sh`
-3. **Run legacy init scripts**:"""
-    
-    for node in nodes:
-        readme_content += f"""
-   - `./init-{node['name']}.sh`"""
-    
-    readme_content += f"""
+### Method 2: Individual Node Management
+```bash
+# 1. Validate system requirements (run once)
+chmod +x cluster-init.sh
+./cluster-init.sh
+
+# 2. Start individual nodes
+cd nodes/{nodes[0]['name']}
+chmod +x run.sh
+./run.sh
+
+cd ../els02
+./run.sh
+# ... repeat for other nodes
+```
 
 ### Method 3: Manual Docker Compose
 ```bash
-# Start all nodes manually
-{' && '.join([f'docker-compose -f docker-compose-{node["name"]}.yml up -d' for node in nodes])}
+# Navigate to each node directory and start
+cd nodes/{nodes[0]['name']}
+docker-compose up -d
+
+cd ../els02
+docker-compose up -d
+# ... repeat for other nodes
 ```
-"""
+
+## 📁 File Organization Benefits
+
+### ✅ Organized Structure
+- Each node has its own dedicated folder
+- Clear separation of concerns
+- Easy to manage individual nodes
+- Scalable for large clusters
+
+### ✅ Container Optimizations
+- **Version-specific JVM options**: Each node includes `container-optimized.options` with:
+  - Elasticsearch 6.x: Legacy GC logging compatible with containers
+  - Elasticsearch 7.x: Modern `-Xlog` syntax with stderr output
+  - Elasticsearch 8.x: Latest JVM optimizations for containers
+- **Container-friendly logging**: All logs output to stderr for better container integration
+- **Memory optimization**: Production-grade memory limits and heap sizing
+
+### ✅ Easy Deployment
+- Copy individual node folders to respective servers
+- Each folder is self-contained
+- Simple to version control and maintain
+
+## 🛠️ Container-Optimized Features
+
+### JVM Options (`container-optimized.options`)
+Each node includes optimized JVM settings:
+- **Heap sizing**: Follows ES best practice (50% of system RAM, max 31GB)
+- **GC optimization**: Version-appropriate garbage collection settings
+- **Container logging**: All output directed to stderr for container compatibility
+- **Error handling**: Heap dumps and error files in appropriate container locations
+
+### Docker Integration
+- **Memory limits**: Production-grade container memory limits
+- **Health checks**: Built-in container health monitoring
+- **Volume mapping**: Proper data, logs, and backup volume mounting
+- **Network configuration**: Optimized for both development and production
+
+## Management Commands
+
+### Cluster Operations
+```bash
+# Check cluster health (from any node)
+curl http://{nodes[0]['ip']}:{nodes[0]['http_port']}/_cluster/health?pretty
+
+# View all nodes
+curl http://{nodes[0]['ip']}:{nodes[0]['http_port']}/_cat/nodes?v
+
+# Stop all nodes
+./stop-all.sh
+
+# Start all nodes
+./start-all.sh
+```
+
+### Individual Node Operations
+```bash
+# Start specific node
+cd nodes/<node-name>
+./run.sh
+
+# Stop specific node
+docker-compose down
+
+# View node logs
+docker-compose logs
+
+# Restart node
+docker-compose restart
+```"""
     
-    readme_content += """
-## Files Included
-"""
+    # Generate global cluster scripts
+    cluster_files["README.md"] = readme_content
     
-    # Generate files for each node
+    # Global system validation script
+    cluster_files["cluster-init.sh"] = generate_global_init_script(config)
+    
+    # Global start/stop scripts
+    cluster_files["start-all.sh"] = generate_start_all_script(config)
+    cluster_files["stop-all.sh"] = generate_stop_all_script(config)
+    
+    # Generate files for each node in organized folders
     for node in nodes:
-        # Individual compose file
+        node_folder = f"nodes/{node['name']}"
+        
+        # Docker Compose file
         compose_file = generate_individual_docker_compose(node, config)
-        cluster_files[f"docker-compose-{node['name']}.yml"] = compose_file
+        cluster_files[f"{node_folder}/docker-compose.yml"] = compose_file
         
-        # Individual init script (legacy - for backwards compatibility)
-        init_script = generate_init_script(node, config)
-        cluster_files[f"init-{node['name']}.sh"] = init_script
+        # Node-specific run script
+        run_script = generate_node_run_script_organized(node, config)
+        cluster_files[f"{node_folder}/run.sh"] = run_script
         
-        # System validation script (requirements checking)
-        system_init_script = generate_system_init_script(node, config)
-        cluster_files[f"init.sh"] = system_init_script
-        
-        # Node-specific run script with validation
-        run_script = generate_node_run_script(node, config)
-        cluster_files[f"run-{node['name']}.sh"] = run_script
-        
-        # **NEW**: Version-specific JVM options file
+        # Container-optimized JVM options
         jvm_options_file = generate_jvm_options_file(node, config)
-        cluster_files[f"{node['name']}-container-optimized.options"] = jvm_options_file
+        cluster_files[f"{node_folder}/container-optimized.options"] = jvm_options_file
         
-        readme_content += f"""
-### {node['name']} Files:
-- `docker-compose-{node['name']}.yml` - Complete Docker Compose configuration
-- `init-{node['name']}.sh` - Basic initialization script (legacy)
-- `run-{node['name']}.sh` - Node-specific run script with pre-flight validation
-- `{node['name']}-container-optimized.options` - **NEW**: Version-specific JVM options for containers
-"""
-    
-    # Add system-wide scripts
-    readme_content += f"""
-### System-wide Scripts:
-- `init.sh` - System requirements validation script (checks Docker, permissions, limits)
-- `run-<node>.sh` - Individual node run scripts with pre-flight validation
-"""
+        # Legacy init script (for backwards compatibility)
+        init_script = generate_init_script_organized(node, config)
+        cluster_files[f"{node_folder}/init.sh"] = init_script
+        
+        # Basic elasticsearch.yml configuration
+        es_config = generate_elasticsearch_yml(node, config)
+        cluster_files[f"{node_folder}/config/elasticsearch.yml"] = es_config
+        
+        # Node-specific README
+        node_readme = generate_node_readme(node, config)
+        cluster_files[f"{node_folder}/README.md"] = node_readme
     
     readme_content += """
 ## Management Commands
@@ -2628,6 +2719,936 @@ def generate_jvm_options_file(node, config):
     
     return jvm_content
 
+def generate_global_init_script(config):
+    """Generate global system validation script for the entire cluster"""
+    cluster_name = config['cluster_name']
+    nodes = config['nodes']
+    
+    script_content = f"""#!/bin/bash
+# Global System Validation Script for Elasticsearch Cluster: {cluster_name}
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Total Nodes: {len(nodes)}
+
+echo "🔍 Global System Validation for Elasticsearch Cluster: {cluster_name}"
+echo "📊 Total Nodes: {len(nodes)}"
+echo "🎭 Node Types: {', '.join(set([', '.join(n['roles']) for n in nodes]))}"
+echo "==============================================="
+
+VALIDATION_PASSED=true
+
+# Function to check if command exists
+command_exists() {{
+    command -v "$1" >/dev/null 2>&1
+}}
+
+# ==================== DOCKER VALIDATION ====================
+echo "🐳 Checking Docker installation..."
+
+if ! command_exists docker; then
+    echo "❌ Docker not found. Please install Docker."
+    VALIDATION_PASSED=false
+else
+    echo "✅ Docker is installed"
+    
+    # Check if Docker is running
+    if ! docker info > /dev/null 2>&1; then
+        echo "❌ Docker is not running. Please start Docker service."
+        VALIDATION_PASSED=false
+    else
+        echo "✅ Docker is running"
+        DOCKER_VERSION=$(docker --version 2>/dev/null | grep -oP '\\d+\\.\\d+' | head -1)
+        echo "ℹ️  Docker version: $DOCKER_VERSION"
+    fi
+fi
+
+# ==================== DOCKER COMPOSE VALIDATION ====================
+echo "🔧 Checking Docker Compose..."
+
+if ! command_exists docker-compose && ! docker compose version > /dev/null 2>&1; then
+    echo "❌ Docker Compose not found. Please install Docker Compose."
+    VALIDATION_PASSED=false
+else
+    echo "✅ Docker Compose is available"
+fi
+
+# ==================== SYSTEM LIMITS VALIDATION ====================
+echo "⚙️ Checking system limits for Elasticsearch..."
+
+# Check vm.max_map_count
+current_max_map_count=$(sysctl vm.max_map_count 2>/dev/null | awk '{{print $3}}' || echo "0")
+if [[ "$current_max_map_count" -ge 262144 ]] 2>/dev/null; then
+    echo "✅ vm.max_map_count: $current_max_map_count (sufficient)"
+else
+    echo "❌ vm.max_map_count: $current_max_map_count (required: 262144+)"
+    echo "   To fix: sudo sysctl -w vm.max_map_count=262144"
+    VALIDATION_PASSED=false
+fi
+
+# ==================== NODE DIRECTORY VALIDATION ====================
+echo "📁 Checking node directories..."
+
+nodes_dir="nodes"
+if [[ ! -d "$nodes_dir" ]]; then
+    echo "❌ Nodes directory not found: $nodes_dir"
+    VALIDATION_PASSED=false
+else
+    echo "✅ Nodes directory exists: $nodes_dir"
+    
+    # Check each node directory
+    missing_nodes=()"""
+
+    for node in nodes:
+        script_content += f"""
+    if [[ ! -d "$nodes_dir/{node['name']}" ]]; then
+        missing_nodes+=("{node['name']}")
+    fi"""
+
+    script_content += f"""
+    
+    if [[ ${{#missing_nodes[@]}} -eq 0 ]]; then
+        echo "✅ All node directories exist"
+    else
+        echo "❌ Missing node directories: ${{missing_nodes[*]}}"
+        VALIDATION_PASSED=false
+    fi
+fi
+
+# ==================== PORT AVAILABILITY CHECK ====================
+echo "🌐 Checking port availability for all nodes..."
+
+if command_exists netstat; then
+    port_conflicts=()"""
+
+    for node in nodes:
+        script_content += f"""
+    if netstat -tuln 2>/dev/null | grep ":{node['http_port']} " > /dev/null; then
+        port_conflicts+=("{node['name']}:HTTP:{node['http_port']}")
+    fi
+    if netstat -tuln 2>/dev/null | grep ":{node['transport_port']} " > /dev/null; then
+        port_conflicts+=("{node['name']}:Transport:{node['transport_port']}")
+    fi"""
+
+    script_content += f"""
+    
+    if [[ ${{#port_conflicts[@]}} -eq 0 ]]; then
+        echo "✅ All ports are available"
+    else
+        echo "❌ Port conflicts detected:"
+        for conflict in "${{port_conflicts[@]}}"; do
+            echo "   • $conflict"
+        done
+        VALIDATION_PASSED=false
+    fi
+else
+    echo "⚠️  netstat not available - cannot check port availability"
+fi
+
+# ==================== FINAL VALIDATION REPORT ====================
+echo ""
+echo "==============================================="
+echo "🔍 GLOBAL VALIDATION SUMMARY"
+echo "==============================================="
+
+if [[ "$VALIDATION_PASSED" == "true" ]]; then
+    echo "✅ All system requirements validated successfully!"
+    echo ""
+    echo "📋 System is ready for Elasticsearch cluster deployment:"
+    echo "   ✅ Docker installed and running"
+    echo "   ✅ System limits properly configured"
+    echo "   ✅ All node directories exist"
+    echo "   ✅ Network ports available"
+    echo ""
+    echo "🚀 Next steps:"
+    echo "   1. Run: ./start-all.sh (automatic cluster startup)"
+    echo "   2. Or manually: cd nodes/<node-name> && ./run.sh"
+    echo "   3. Monitor: curl http://{nodes[0]['ip']}:{nodes[0]['http_port']}/_cluster/health"
+else
+    echo "❌ System requirements validation FAILED!"
+    echo ""
+    echo "📋 Issues found that need to be resolved:"
+    echo "   Please address the ❌ items listed above"
+    echo ""
+    echo "💡 Common fixes:"
+    echo "   • Install Docker: https://docs.docker.com/get-docker/"
+    echo "   • Set vm.max_map_count: sudo sysctl -w vm.max_map_count=262144"
+    echo "   • Check file structure and node directories"
+fi
+
+echo "==============================================="
+exit $([ "$VALIDATION_PASSED" = "true" ] && echo 0 || echo 1)
+"""
+    
+    return script_content
+
+def generate_start_all_script(config):
+    """Generate script to start all nodes sequentially"""
+    cluster_name = config['cluster_name']
+    nodes = config['nodes']
+    
+    script_content = f"""#!/bin/bash
+# Start All Nodes Script for Elasticsearch Cluster: {cluster_name}
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+echo "🚀 Starting Elasticsearch Cluster: {cluster_name}"
+echo "📊 Total Nodes: {len(nodes)}"
+echo "==============================================="
+
+# Function to check if command exists
+command_exists() {{
+    command -v "$1" >/dev/null 2>&1
+}}
+
+# Determine docker-compose command
+if command_exists docker-compose; then
+    COMPOSE_CMD="docker-compose"
+else
+    COMPOSE_CMD="docker compose"
+fi
+
+FAILED_NODES=()
+STARTED_NODES=()
+
+# Start nodes sequentially"""
+
+    for i, node in enumerate(nodes):
+        script_content += f"""
+
+echo ""
+echo "🖥️ Starting Node {i+1}/{len(nodes)}: {node['name']}"
+echo "   Roles: {', '.join(node['roles']).title()}"
+echo "   Location: nodes/{node['name']}"
+
+if [[ -d "nodes/{node['name']}" ]]; then
+    cd "nodes/{node['name']}"
+    
+    if [[ -f "docker-compose.yml" ]]; then
+        echo "   📄 Found docker-compose.yml"
+        
+        # Start the container
+        if $COMPOSE_CMD up -d > /dev/null 2>&1; then
+            echo "   ✅ Container started successfully"
+            
+            # Wait for health check
+            echo "   ⏳ Waiting for {node['name']} to be ready..."
+            for j in {{1..30}}; do
+                if curl -f http://{node['ip']}:{node['http_port']}/_cluster/health > /dev/null 2>&1; then
+                    echo "   ✅ {node['name']} is healthy and ready!"
+                    STARTED_NODES+=("{node['name']}")
+                    break
+                fi
+                
+                if [[ $j -eq 30 ]]; then
+                    echo "   ⚠️  {node['name']} started but not responding to health checks"
+                    STARTED_NODES+=("{node['name']} (unverified)")
+                    break
+                fi
+                
+                sleep 2
+            done
+        else
+            echo "   ❌ Failed to start {node['name']}"
+            FAILED_NODES+=("{node['name']}")
+        fi
+    else
+        echo "   ❌ docker-compose.yml not found in nodes/{node['name']}"
+        FAILED_NODES+=("{node['name']} (no compose file)")
+    fi
+    
+    cd "../.."
+else
+    echo "   ❌ Directory not found: nodes/{node['name']}"
+    FAILED_NODES+=("{node['name']} (no directory)")
+fi"""
+
+    script_content += f"""
+
+echo ""
+echo "==============================================="
+echo "📊 CLUSTER STARTUP SUMMARY"
+echo "==============================================="
+
+if [[ ${{#FAILED_NODES[@]}} -eq 0 ]]; then
+    echo "✅ All nodes started successfully!"
+    echo ""
+    echo "🖥️ Started Nodes (${{#STARTED_NODES[@]}}):"
+    for node in "${{STARTED_NODES[@]}}"; do
+        echo "   ✅ $node"
+    done
+    
+    echo ""
+    echo "🏥 Cluster Health Check:"
+    echo "⏳ Waiting for cluster to stabilize..."
+    sleep 10
+    
+    if curl -s http://{nodes[0]['ip']}:{nodes[0]['http_port']}/_cluster/health?pretty 2>/dev/null; then
+        echo ""
+        echo "🖥️ Cluster Nodes:"
+        curl -s http://{nodes[0]['ip']}:{nodes[0]['http_port']}/_cat/nodes?v 2>/dev/null || echo "❌ Could not retrieve node list"
+    else
+        echo "❌ Could not retrieve cluster health"
+    fi
+    
+else
+    echo "⚠️ Some nodes failed to start:"
+    echo ""
+    echo "✅ Started Nodes (${{#STARTED_NODES[@]}}):"
+    for node in "${{STARTED_NODES[@]}}"; do
+        echo "   ✅ $node"
+    done
+    
+    echo ""
+    echo "❌ Failed Nodes (${{#FAILED_NODES[@]}}):"
+    for node in "${{FAILED_NODES[@]}}"; do
+        echo "   ❌ $node"
+    done
+    
+    echo ""
+    echo "💡 Troubleshooting:"
+    echo "   • Check logs: cd nodes/<node-name> && docker-compose logs"
+    echo "   • Manual start: cd nodes/<node-name> && ./run.sh"
+    echo "   • System validation: ./cluster-init.sh"
+fi
+
+echo ""
+echo "🔗 Access URLs:"
+"""
+
+    for node in nodes:
+        script_content += f"""echo "   {node['name']}: http://{node['ip']}:{node['http_port']}" """
+
+    script_content += f"""
+
+echo ""
+echo "📋 Management Commands:"
+echo "   Stop cluster:     ./stop-all.sh"
+echo "   Check health:     curl http://{nodes[0]['ip']}:{nodes[0]['http_port']}/_cluster/health?pretty"
+echo "   View nodes:       curl http://{nodes[0]['ip']}:{nodes[0]['http_port']}/_cat/nodes?v"
+echo "==============================================="
+"""
+    
+    return script_content
+
+def generate_stop_all_script(config):
+    """Generate script to stop all nodes"""
+    cluster_name = config['cluster_name']
+    nodes = config['nodes']
+    
+    script_content = f"""#!/bin/bash
+# Stop All Nodes Script for Elasticsearch Cluster: {cluster_name}
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+echo "🛑 Stopping Elasticsearch Cluster: {cluster_name}"
+echo "📊 Total Nodes: {len(nodes)}"
+echo "==============================================="
+
+# Function to check if command exists
+command_exists() {{
+    command -v "$1" >/dev/null 2>&1
+}}
+
+# Determine docker-compose command
+if command_exists docker-compose; then
+    COMPOSE_CMD="docker-compose"
+else
+    COMPOSE_CMD="docker compose"
+fi
+
+STOPPED_NODES=()
+FAILED_STOPS=()
+
+# Stop nodes in reverse order (good practice for ES clusters)"""
+
+    for i, node in enumerate(reversed(nodes)):
+        script_content += f"""
+
+echo ""
+echo "🛑 Stopping Node {i+1}/{len(nodes)}: {node['name']}"
+
+if [[ -d "nodes/{node['name']}" ]]; then
+    cd "nodes/{node['name']}"
+    
+    if [[ -f "docker-compose.yml" ]]; then
+        if $COMPOSE_CMD down > /dev/null 2>&1; then
+            echo "   ✅ {node['name']} stopped successfully"
+            STOPPED_NODES+=("{node['name']}")
+        else
+            echo "   ❌ Failed to stop {node['name']}"
+            FAILED_STOPS+=("{node['name']}")
+        fi
+    else
+        echo "   ⚠️  docker-compose.yml not found"
+        FAILED_STOPS+=("{node['name']} (no compose file)")
+    fi
+    
+    cd "../.."
+else
+    echo "   ⚠️  Directory not found: nodes/{node['name']}"
+    FAILED_STOPS+=("{node['name']} (no directory)")
+fi"""
+
+    script_content += f"""
+
+echo ""
+echo "==============================================="
+echo "📊 CLUSTER SHUTDOWN SUMMARY"
+echo "==============================================="
+
+if [[ ${{#FAILED_STOPS[@]}} -eq 0 ]]; then
+    echo "✅ All nodes stopped successfully!"
+    echo ""
+    echo "🛑 Stopped Nodes (${{#STOPPED_NODES[@]}}):"
+    for node in "${{STOPPED_NODES[@]}}"; do
+        echo "   ✅ $node"
+    done
+else
+    echo "⚠️ Some issues during shutdown:"
+    echo ""
+    echo "✅ Stopped Nodes (${{#STOPPED_NODES[@]}}):"
+    for node in "${{STOPPED_NODES[@]}}"; do
+        echo "   ✅ $node"
+    done
+    
+    echo ""
+    echo "❌ Failed to Stop (${{#FAILED_STOPS[@]}}):"
+    for node in "${{FAILED_STOPS[@]}}"; do
+        echo "   ❌ $node"
+    done
+    
+    echo ""
+    echo "💡 Manual cleanup:"
+    echo "   • Check running containers: docker ps"
+    echo "   • Force stop: docker stop <container-name>"
+    echo "   • Remove: docker rm <container-name>"
+fi
+
+echo ""
+echo "📋 Cluster Management:"
+echo "   Start cluster:    ./start-all.sh"
+echo "   Validate system:  ./cluster-init.sh"
+echo "==============================================="
+"""
+    
+    return script_content
+
+def generate_node_run_script_organized(node, config):
+    """Generate node-specific run script for organized folder structure"""
+    cluster_name = config['cluster_name']
+    
+    script_content = f"""#!/bin/bash
+# Run Script for Elasticsearch Node: {node['name']}
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Location: nodes/{node['name']}/run.sh
+
+echo "🚀 Starting Elasticsearch Node: {node['name']}"
+echo "📊 Cluster: {cluster_name}"
+echo "🎭 Roles: {', '.join(node['roles'])}"
+echo "💻 Hardware: {node['cpu_cores']} cores, {node['ram_gb']}GB RAM"
+echo "🌐 Network: {node['ip']}:{node['http_port']}"
+echo "==============================================="
+
+# Function to check if command exists
+command_exists() {{
+    command -v "$1" >/dev/null 2>&1
+}}
+
+VALIDATION_PASSED=true
+
+# ==================== PRE-FLIGHT CHECKS ====================
+echo "🔍 Running pre-flight validation checks..."
+
+# Check if Docker is running
+if ! docker info > /dev/null 2>&1; then
+    echo "❌ Docker is not running. Please start Docker first."
+    VALIDATION_PASSED=false
+else
+    echo "✅ Docker is running"
+fi
+
+# Check if Docker Compose is available
+if ! command_exists docker-compose && ! docker compose version > /dev/null 2>&1; then
+    echo "❌ Docker Compose not found. Please install Docker Compose."
+    VALIDATION_PASSED=false
+else
+    echo "✅ Docker Compose is available"
+fi
+
+# Check if compose file exists
+COMPOSE_FILE="docker-compose.yml"
+if [[ ! -f "$COMPOSE_FILE" ]]; then
+    echo "❌ Docker Compose file not found: $COMPOSE_FILE"
+    echo "   Please ensure you're in the correct node directory"
+    VALIDATION_PASSED=false
+else
+    echo "✅ Docker Compose file found: $COMPOSE_FILE"
+fi
+
+# ==================== DIRECTORY VALIDATION ====================
+echo "📁 Validating directories for {node['name']}..."
+
+# Required directories (relative to node folder)
+DIRS=(
+    "."
+    "data"
+    "logs" 
+    "backups"
+    "config"
+)
+
+missing_dirs=()
+for dir in "${{DIRS[@]}}"; do
+    if [[ ! -d "$dir" ]]; then
+        missing_dirs+=("$dir")
+    fi
+done
+
+if [[ ${{#missing_dirs[@]}} -eq 0 ]]; then
+    echo "✅ All required directories exist"
+else
+    echo "❌ Missing directories: ${{missing_dirs[*]}}"
+    echo "   Creating missing directories..."
+    for dir in "${{missing_dirs[@]}}"; do
+        mkdir -p "$dir"
+        echo "   📁 Created: $dir"
+    done
+fi
+
+# ==================== PERMISSIONS VALIDATION ====================
+echo "🔐 Checking permissions..."
+
+# Check if directories are writable
+writable_issues=()
+for dir in "data" "logs" "backups"; do
+    if [[ -d "$dir" ]]; then
+        if [[ ! -w "$dir" ]]; then
+            writable_issues+=("$dir")
+        fi
+    fi
+done
+
+if [[ ${{#writable_issues[@]}} -eq 0 ]]; then
+    echo "✅ Directory permissions are correct"
+else
+    echo "❌ Directories not writable: ${{writable_issues[*]}}"
+    echo "   Attempting to fix permissions..."
+    for dir in "${{writable_issues[@]}}"; do
+        chmod 755 "$dir" 2>/dev/null && echo "   ✅ Fixed: $dir" || echo "   ❌ Could not fix: $dir"
+    done
+fi
+
+# ==================== CONTAINER MANAGEMENT ====================
+if [[ "$VALIDATION_PASSED" == "false" ]]; then
+    echo ""
+    echo "❌ PRE-FLIGHT VALIDATION FAILED"
+    echo "   Please resolve the issues above before starting the container"
+    exit 1
+fi
+
+echo ""
+echo "✅ Pre-flight validation passed - proceeding with container startup"
+echo ""
+
+# Determine docker-compose command
+if command_exists docker-compose; then
+    COMPOSE_CMD="docker-compose"
+else
+    COMPOSE_CMD="docker compose"
+fi
+
+echo "🐳 Managing {node['name']} container..."
+
+# Check if container already exists
+if docker ps -a --format "table {{{{.Names}}}}" | grep -q "^{node['name']}$"; then
+    echo "ℹ️  Container {node['name']} already exists"
+    
+    # Check if it's running
+    if docker ps --format "table {{{{.Names}}}}" | grep -q "^{node['name']}$"; then
+        echo "ℹ️  Container {node['name']} is already running"
+        
+        echo "🔄 Checking container health..."
+        for i in {{1..10}}; do
+            if curl -f http://{node['ip']}:{node['http_port']}/_cluster/health > /dev/null 2>&1; then
+                echo "✅ {node['name']} is healthy and ready!"
+                break
+            fi
+            echo "⏳ Waiting for health check... ($i/10)"
+            sleep 3
+        done
+        
+        echo "📊 Container status:"
+        docker ps --filter "name={node['name']}" --format "table {{{{.Names}}}}\\t{{{{.Status}}}}\\t{{{{.Ports}}}}"
+        
+        exit 0
+    else
+        echo "🔄 Starting existing container..."
+        docker start {node['name']}
+    fi
+else
+    echo "🚀 Creating and starting new container..."
+    $COMPOSE_CMD up -d
+fi
+
+# ==================== HEALTH CHECK ====================
+echo "🏥 Performing health check..."
+
+echo "⏳ Waiting for {node['name']} to be ready..."
+for i in {{1..60}}; do
+    if curl -f http://{node['ip']}:{node['http_port']}/_cluster/health > /dev/null 2>&1; then
+        echo "✅ {node['name']} is healthy and ready!"
+        break
+    fi
+    
+    if [[ $i -eq 60 ]]; then
+        echo "❌ {node['name']} failed to become ready after 5 minutes"
+        echo "📋 Troubleshooting steps:"
+        echo "   1. Check logs: docker logs {node['name']}"
+        echo "   2. Check container status: docker ps -a"
+        echo "   3. Run global validation: ../../cluster-init.sh"
+        exit 1
+    fi
+    
+    echo "⏳ Waiting for {node['name']} to be ready... ($i/60)"
+    sleep 5
+done
+
+# ==================== STATUS REPORT ====================
+echo ""
+echo "==============================================="
+echo "📊 Node Status Report: {node['name']}"
+echo "==============================================="
+
+# Container status
+echo "🐳 Container Status:"
+docker ps --filter "name={node['name']}" --format "table {{{{.Names}}}}\\t{{{{.Status}}}}\\t{{{{.Ports}}}}"
+
+# Elasticsearch node info
+echo ""
+echo "🖥️ Node Information:"
+curl -s http://{node['ip']}:{node['http_port']}/_nodes/{node['name']}?pretty 2>/dev/null | grep -E '"name"|"version"|"roles"' || echo "❌ Could not retrieve node info"
+
+echo ""
+echo "==============================================="
+echo "✅ {node['name']} is running successfully!"
+echo ""
+echo "🔗 Node URLs:"
+echo "   Health: http://{node['ip']}:{node['http_port']}/_cluster/health"
+echo "   Stats:  http://{node['ip']}:{node['http_port']}/_nodes/stats"
+echo ""
+echo "📋 Management Commands:"
+echo "   View logs:    docker logs {node['name']}"
+echo "   Follow logs:  docker logs -f {node['name']}"
+echo "   Stop node:    docker-compose down"
+echo "   Restart:      docker-compose restart"
+echo "==============================================="
+"""
+    
+    return script_content
+
+def generate_init_script_organized(node, config):
+    """Generate legacy init script for organized folder structure"""
+    cluster_name = config['cluster_name']
+    
+    script_content = f"""#!/bin/bash
+# Legacy Initialization Script for {node['name']}
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Location: nodes/{node['name']}/init.sh
+# Note: This is for backwards compatibility. Use run.sh for better functionality.
+
+echo "🔧 Legacy Init Script for {node['name']}"
+echo "📊 Cluster: {cluster_name}"
+echo "⚠️  Note: Consider using run.sh for enhanced functionality"
+echo "==============================================="
+
+# Create directories
+echo "📁 Creating directories..."
+mkdir -p {{data,logs,backups,config}}
+
+# Set basic permissions
+echo "🔐 Setting basic permissions..."
+chmod 755 {{data,logs,backups,config}}
+
+# Create basic elasticsearch.yml if it doesn't exist
+if [[ ! -f "config/elasticsearch.yml" ]]; then
+    echo "📝 Creating basic elasticsearch.yml..."
+    cat > config/elasticsearch.yml << 'EOF'
+# Basic Elasticsearch configuration for {node['name']}
+cluster.name: {cluster_name}
+node.name: {node['name']}
+network.host: 0.0.0.0
+http.port: 9200
+transport.tcp.port: 9300
+
+# Node roles
+node.master: {'true' if 'master' in node['roles'] else 'false'}
+node.data: {'true' if 'data' in node['roles'] else 'false'}
+node.ingest: {'true' if 'ingest' in node['roles'] else 'false'}
+
+# Memory lock
+bootstrap.memory_lock: true
+EOF
+else
+    echo "✅ elasticsearch.yml already exists"
+fi
+
+echo ""
+echo "✅ Legacy initialization complete!"
+echo ""
+echo "🚀 Next steps:"
+echo "   1. Run: ./run.sh (recommended)"
+echo "   2. Or: docker-compose up -d (manual)"
+echo "==============================================="
+"""
+    
+    return script_content
+
+def generate_elasticsearch_yml(node, config):
+    """Generate basic elasticsearch.yml configuration file"""
+    cluster_name = config['cluster_name']
+    nodes = config['nodes']
+    
+    # Get version-specific configuration
+    version_config = get_version_specific_settings(config['es_version'], node, nodes, cluster_name, config)
+    
+    yml_content = f"""# Elasticsearch Configuration for {node['name']}
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Version: {config['es_version']}
+# Location: nodes/{node['name']}/config/elasticsearch.yml
+
+# ==================== CLUSTER CONFIGURATION ====================
+cluster.name: {cluster_name}
+node.name: {node['name']}
+
+# ==================== NODE ROLES ===================="""
+
+    # Add role configuration based on ES version
+    if version_config['version_major'] >= 8:
+        roles_array = '[' + ','.join([f'"{role}"' for role in node['roles']]) + ']'
+        yml_content += f"""
+node.roles: {roles_array}"""
+    else:
+        yml_content += f"""
+node.master: {'true' if 'master' in node['roles'] else 'false'}
+node.data: {'true' if 'data' in node['roles'] else 'false'}
+node.ingest: {'true' if 'ingest' in node['roles'] else 'false'}"""
+
+    yml_content += f"""
+
+# ==================== NETWORK CONFIGURATION ====================
+network.host: 0.0.0.0
+network.publish_host: {node['ip']}
+http.port: 9200
+transport.tcp.port: 9300
+
+# ==================== DISCOVERY CONFIGURATION ===================="""
+
+    # Add discovery configuration based on version
+    if version_config['version_major'] == 6:
+        discovery_hosts = ','.join([n['hostname'] for n in nodes])
+        master_eligible = [n for n in nodes if 'master' in n['roles']]
+        min_master_nodes = calculate_minimum_master_nodes(len(nodes), len(master_eligible))
+        yml_content += f"""
+discovery.zen.ping.unicast.hosts: [{discovery_hosts}]
+discovery.zen.minimum_master_nodes: {min_master_nodes}
+discovery.zen.fd.ping_timeout: 30s"""
+    else:
+        discovery_hosts = ','.join([f'"{n["hostname"]}:9300"' for n in nodes])
+        master_eligible = [n for n in nodes if 'master' in n['roles']]
+        master_nodes_list = ','.join([f'"{n["name"]}"' for n in master_eligible])
+        yml_content += f"""
+discovery.seed_hosts: [{discovery_hosts}]
+cluster.initial_master_nodes: [{master_nodes_list}]"""
+
+    yml_content += f"""
+
+# ==================== MEMORY CONFIGURATION ====================
+bootstrap.memory_lock: true
+
+# ==================== PATH CONFIGURATION ====================
+path.data: /usr/share/elasticsearch/data
+path.logs: /usr/share/elasticsearch/logs
+
+# ==================== BASIC PERFORMANCE SETTINGS ===================="""
+
+    optimal = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
+    yml_content += f"""
+indices.memory.index_buffer_size: {optimal['memory_settings']['index_buffer_size']}
+indices.queries.cache.size: {optimal['cache_settings']['queries_cache_size']}
+
+# ==================== X-PACK SETTINGS ===================="""
+
+    # Add X-Pack settings based on version
+    xpack_config = config['xpack_settings']
+    if version_config['version_major'] >= 8:
+        if not xpack_config.get('security', False):
+            yml_content += """
+xpack.security.enabled: false
+xpack.security.enrollment.enabled: false"""
+        else:
+            yml_content += """
+xpack.security.enabled: true
+xpack.security.authc.api_key.enabled: true"""
+    else:
+        yml_content += f"""
+xpack.security.enabled: {'true' if xpack_config.get('security', False) else 'false'}"""
+
+    for setting, enabled in xpack_config.items():
+        if setting != 'security':
+            if setting == 'ilm' and version_config['version_major'] == 6:
+                continue  # ILM not available in v6
+            yml_content += f"""
+xpack.{setting}.enabled: {'true' if enabled else 'false'}"""
+
+    yml_content += f"""
+
+# ==================== DEVELOPMENT SETTINGS ====================
+# Note: These settings are for development/testing
+# For production, review and adjust security, networking, and performance settings
+http.cors.enabled: true
+http.cors.allow-origin: "*"
+"""
+
+    return yml_content
+
+def generate_node_readme(node, config):
+    """Generate README for individual node"""
+    cluster_name = config['cluster_name']
+    optimal = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
+    
+    readme_content = f"""# Elasticsearch Node: {node['name']}
+
+## Node Information
+- **Cluster**: {cluster_name}
+- **Version**: {config['es_version']}
+- **Roles**: {', '.join(node['roles']).title()}
+- **Hardware**: {node['cpu_cores']} cores, {node['ram_gb']}GB RAM
+- **Network**: {node['ip']}:{node['http_port']}
+- **Heap Size**: {optimal['heap_size']}
+
+## 📁 Files in this Directory
+- `docker-compose.yml` - Complete Docker Compose configuration for this node
+- `run.sh` - Start this node with pre-flight validation and health checks
+- `container-optimized.options` - Version-specific JVM options for containers
+- `init.sh` - Legacy initialization script (backwards compatibility)
+- `config/elasticsearch.yml` - Basic Elasticsearch configuration
+- `README.md` - This file
+
+## 🚀 Quick Start
+
+### Start this node
+```bash
+chmod +x run.sh
+./run.sh
+```
+
+### Alternative: Manual Docker Compose
+```bash
+docker-compose up -d
+```
+
+### Check node status
+```bash
+curl http://{node['ip']}:{node['http_port']}/_cluster/health?pretty
+```
+
+## 🔧 Configuration Details
+
+### Memory Configuration
+- **System RAM**: {node['ram_gb']}GB
+- **Elasticsearch Heap**: {optimal['heap_size']}
+- **Container Limit**: {optimal['production_memory_limits']['container_limit_gb']}GB
+- **Off-Heap Memory**: {optimal['production_memory_limits']['off_heap_gb']}GB
+
+### Performance Settings
+- **Search Threads**: {optimal['thread_pools']['search']}
+- **Index Threads**: {optimal['thread_pools']['index']}
+- **Bulk Threads**: {optimal['thread_pools']['bulk']}
+- **GC Collector**: {optimal['jvm_settings']['gc_collector']}
+
+### Capacity Estimates
+- **Data Capacity**: ~{optimal['capacity_estimates']['data_capacity_gb']:,}GB
+- **Concurrent Searches**: ~{optimal['capacity_estimates']['concurrent_searches']:,}
+- **Indexing Rate**: ~{optimal['capacity_estimates']['indexing_rate_docs_per_sec']:,} docs/sec
+
+## 📊 Management Commands
+
+### Container Management
+```bash
+# Start
+./run.sh
+
+# Stop
+docker-compose down
+
+# Restart
+docker-compose restart
+
+# View logs
+docker-compose logs
+
+# Follow logs
+docker-compose logs -f
+```
+
+### Health Monitoring
+```bash
+# Node health
+curl http://{node['ip']}:{node['http_port']}/_cluster/health?pretty
+
+# Node stats
+curl http://{node['ip']}:{node['http_port']}/_nodes/stats?pretty
+
+# Node info
+curl http://{node['ip']}:{node['http_port']}/_nodes/{node['name']}?pretty
+```
+
+## 🐳 Container Details
+
+### Volume Mounts
+- `./data` → `/usr/share/elasticsearch/data`
+- `./logs` → `/usr/share/elasticsearch/logs`
+- `./backups` → `/usr/share/elasticsearch/backups`
+
+### Network Ports
+- **HTTP**: {node['http_port']} → 9200
+- **Transport**: {node['transport_port']} → 9300
+
+### Resource Limits
+- **Memory**: {optimal['production_memory_limits']['container_limit_gb']}GB
+- **CPU**: {node['cpu_cores']} cores
+
+## 🔧 Troubleshooting
+
+### Common Issues
+1. **Container won't start**
+   - Check Docker is running: `docker info`
+   - Check system requirements: `../../cluster-init.sh`
+   - Check logs: `docker-compose logs`
+
+2. **Permission errors**
+   - Fix permissions: `chmod 755 data logs backups`
+   - Set ownership: `sudo chown -R 1000:1000 .`
+
+3. **Memory issues**
+   - Check vm.max_map_count: `sysctl vm.max_map_count`
+   - Should be ≥ 262144: `sudo sysctl -w vm.max_map_count=262144`
+
+4. **Network issues**
+   - Check port availability: `netstat -tuln | grep {node['http_port']}`
+   - Verify IP configuration and extra hosts
+
+### Log Locations
+- **Container logs**: `docker-compose logs`
+- **Elasticsearch logs**: `./logs/` directory
+- **JVM errors**: `./logs/hs_err_pid*.log`
+
+## 🔗 Related Files
+- **Global validation**: `../../cluster-init.sh`
+- **Start all nodes**: `../../start-all.sh`
+- **Stop all nodes**: `../../stop-all.sh`
+- **Cluster README**: `../../README.md`
+"""
+    
+    return readme_content
+
 # Create main layout - sidebar is handled by st.sidebar, main content uses full width
 main_col = st.container()
 
@@ -3384,22 +4405,31 @@ with main_col:
                     
                     with st.expander("📋 **What's Included in Production Package**", expanded=False):
                         st.markdown("""
-                        **System-wide Scripts:**
-                        - `init.sh` - Comprehensive system initialization (Docker, permissions, limits)
-                        - `README.md` - Complete documentation and usage instructions
+                        **📁 Organized Folder Structure:**
+                        ```
+                        elasticsearch-cluster/
+                        ├── README.md                    # Complete documentation
+                        ├── cluster-init.sh              # Global system validation
+                        ├── start-all.sh                 # Start all nodes automatically
+                        ├── stop-all.sh                  # Stop all nodes
+                        └── nodes/
+                            ├── els01/                   # Node 1 folder
+                            │   ├── docker-compose.yml   # Complete container config
+                            │   ├── run.sh               # Start this node
+                            │   ├── container-optimized.options  # JVM options
+                            │   ├── config/elasticsearch.yml     # ES configuration
+                            │   └── init.sh              # Legacy init script
+                            ├── els02/                   # Node 2 folder
+                            └── ... (additional nodes)
+                        ```
                         
-                        **Per-Node Files:**
-                        - `docker-compose-<node>.yml` - Complete Docker Compose with integrated settings
-                        - `run-<node>.sh` - Node-specific run script with health checks and validation
-                        - `init-<node>.sh` - Legacy initialization script (backwards compatibility)
-                        
-                                **Key Features:**
-        - ✅ **Dedicated Server Memory Formula**: ES heap = 50% of system RAM (max 31GB)
-        - ✅ **Optimized Container Limits**: Minimal OS overhead (1-2GB) for dedicated servers
-        - ✅ **Docker validation**: Installation, system limits (vm.max_map_count, ulimits)
-        - ✅ **Directory validation**: Permissions and requirements checking
-        - ✅ **Health monitoring**: Status reporting and port availability checking
-        - ✅ **Production-grade**: 95%+ memory efficiency for dedicated ES servers
+                        **✨ Container Optimizations:**
+                        - **Version-specific JVM options**: ES 6.x/7.x/8.x container logging
+                        - **Dedicated server memory**: ES heap = 50% of system RAM (max 31GB)
+                        - **Organized deployment**: Each node in its own folder
+                        - **Production validation**: Docker, system limits, permissions
+                        - **Health monitoring**: Automated startup and health checks
+                        - **Easy management**: Copy node folders to respective servers
                         """)
                 
                 # Generate button text based on mode
@@ -3423,8 +4453,8 @@ with main_col:
                     mode_suffix = "dev" if deployment_mode == "development" else "prod"
                     
                     # Download button text based on mode
-                    download_text = "📦 Download Development Package" if deployment_mode == "development" else "📦 Download Production Package"
-                    help_text = "Contains single Docker Compose file and simple startup script" if deployment_mode == "development" else "Contains complete Docker Compose files, init scripts, and README for each node"
+                    download_text = "📦 Download Development Package" if deployment_mode == "development" else "📦 Download Production Package (Organized Folders)"
+                    help_text = "Contains single Docker Compose file and simple startup script" if deployment_mode == "development" else "Contains organized folders per node with Docker Compose, JVM options, configs, and management scripts"
                     
                     st.download_button(
                         label=download_text,
@@ -3479,59 +4509,124 @@ with main_col:
                             """)
                         
                         else:
-                            # Production mode preview - show individual node files
-                            tab_names = [f"📄 {node['name']}" for node in nodes]
-                            node_tabs = st.tabs(tab_names)
+                            # Production mode preview - show organized folder structure
+                            st.markdown("### 🏭 Production Mode Files Preview (Organized Structure)")
                             
-                            for i, node in enumerate(nodes):
-                                with node_tabs[i]:
-                                    st.markdown(f"### 🏭 {node['name']} Production Files")
-                                    st.markdown(f"**Roles**: {', '.join(node['roles']).title()} | **Hardware**: {node['cpu_cores']} cores, {node['ram_gb']}GB RAM")
-                                    
-                                    # Create tabs for different file types
-                                    file_tab1, file_tab2, file_tab3, file_tab4 = st.tabs(["🐳 Docker Compose", "🚀 Run Script", "⚙️ System Init", "📜 Legacy Init"])
-                                    
-                                    with file_tab1:
-                                        st.subheader("🐳 Docker Compose File")
-                                        compose_content = generate_individual_docker_compose(node, st.session_state.cluster_config)
-                                        st.code(compose_content, language='yaml')
-                                        st.info("✅ **Production ready**: Extra hosts mapping, individual networking, comprehensive settings")
-                                    
-                                    with file_tab2:
-                                        st.subheader(f"🚀 Run Script: run-{node['name']}.sh")
-                                        st.markdown("**Purpose**: Start this specific node with pre-flight validation and health checks")
-                                        run_content = generate_node_run_script(node, st.session_state.cluster_config)
-                                        st.code(run_content, language='bash')
-                                        st.success("✅ **Features**: Pre-flight validation, requirements checking, container startup, health monitoring")
-                                    
-                                    with file_tab3:
-                                        st.subheader("⚙️ System Validation: init.sh")
-                                        st.markdown("**Purpose**: Validate system requirements (Docker, permissions, system limits)")
-                                        init_content = generate_system_init_script(node, st.session_state.cluster_config)
-                                        st.code(init_content, language='bash')
-                                        st.info("✅ **Features**: Docker validation, system limits checking (vm.max_map_count), directory validation, permissions validation")
-                                    
-                                    with file_tab4:
-                                        st.subheader(f"📜 Legacy Init: init-{node['name']}.sh")
-                                        st.markdown("**Purpose**: Basic node initialization (kept for backwards compatibility)")
-                                        legacy_init_content = generate_init_script(node, st.session_state.cluster_config)
-                                        st.code(legacy_init_content, language='bash')
-                                        st.warning("⚠️ **Legacy**: Use the System Init and Run scripts for better functionality")
-                                    
-                                    # Show file summary
-                                    st.markdown("---")
-                                    st.info(f"""
-                                    📦 **Production Package for {node['name']}**:
-                                    - `docker-compose-{node['name']}.yml` - Individual Docker Compose with host networking
-                                    - `run-{node['name']}.sh` - Node-specific run script with pre-flight validation
-                                    - `init.sh` - System requirements validation script
-                                    - `init-{node['name']}.sh` - Legacy initialization script
-                                    
-                                    **Recommended workflow**:
-                                    1. Run `init.sh` to validate system requirements
-                                    2. Address any validation issues found
-                                    3. Run `run-{node['name']}.sh` to start this node
-                                    """)
+                            # Create main tabs for global and node-specific files
+                            global_tab, nodes_tab = st.tabs(["🌐 Global Scripts", "📁 Node Folders"])
+                            
+                            with global_tab:
+                                st.markdown("### 🌐 Cluster-wide Management Scripts")
+                                
+                                global_file_tabs = st.tabs(["📋 README", "🔍 Cluster Init", "🚀 Start All", "🛑 Stop All"])
+                                
+                                with global_file_tabs[0]:
+                                    st.subheader("📋 README.md")
+                                    st.markdown("**Purpose**: Complete cluster documentation with organized structure")
+                                    cluster_files = generate_cluster_files(st.session_state.cluster_config)
+                                    st.code(cluster_files["README.md"], language='markdown')
+                                    st.info("✅ **Content**: Organized structure, quick start, management commands")
+                                
+                                with global_file_tabs[1]:
+                                    st.subheader("🔍 cluster-init.sh")
+                                    st.markdown("**Purpose**: Global system validation for entire cluster")
+                                    st.code(cluster_files["cluster-init.sh"], language='bash')
+                                    st.success("✅ **Features**: Docker validation, system limits, directory structure, port availability")
+                                
+                                with global_file_tabs[2]:
+                                    st.subheader("🚀 start-all.sh")
+                                    st.markdown("**Purpose**: Start all nodes sequentially with health checks")
+                                    st.code(cluster_files["start-all.sh"], language='bash')
+                                    st.success("✅ **Features**: Sequential startup, health monitoring, cluster status")
+                                
+                                with global_file_tabs[3]:
+                                    st.subheader("🛑 stop-all.sh")
+                                    st.markdown("**Purpose**: Stop all nodes in proper order")
+                                    st.code(cluster_files["stop-all.sh"], language='bash')
+                                    st.info("✅ **Features**: Reverse order shutdown, cleanup validation")
+                            
+                            with nodes_tab:
+                                st.markdown("### 📁 Individual Node Folders")
+                                
+                                # Show node folder structure
+                                node_tab_names = [f"📂 {node['name']}/" for node in nodes]
+                                node_folder_tabs = st.tabs(node_tab_names)
+                                
+                                for i, node in enumerate(nodes):
+                                    with node_folder_tabs[i]:
+                                        st.markdown(f"### 📂 nodes/{node['name']}/")
+                                        st.markdown(f"**Roles**: {', '.join(node['roles']).title()} | **Hardware**: {node['cpu_cores']} cores, {node['ram_gb']}GB RAM")
+                                        
+                                        # Create tabs for different file types in this node folder
+                                        file_tabs = st.tabs(["🐳 Docker Compose", "🚀 Run Script", "⚙️ JVM Options", "📝 ES Config", "📋 Node README"])
+                                        
+                                        with file_tabs[0]:
+                                            st.subheader("🐳 docker-compose.yml")
+                                            st.markdown(f"**Location**: `nodes/{node['name']}/docker-compose.yml`")
+                                            compose_content = generate_individual_docker_compose(node, st.session_state.cluster_config)
+                                            st.code(compose_content, language='yaml')
+                                            st.info("✅ **Production ready**: Extra hosts mapping, individual networking, comprehensive settings")
+                                        
+                                        with file_tabs[1]:
+                                            st.subheader("🚀 run.sh")
+                                            st.markdown(f"**Location**: `nodes/{node['name']}/run.sh`")
+                                            st.markdown("**Purpose**: Start this specific node with pre-flight validation")
+                                            run_content = generate_node_run_script_organized(node, st.session_state.cluster_config)
+                                            st.code(run_content, language='bash')
+                                            st.success("✅ **Features**: Pre-flight validation, directory auto-creation, health monitoring")
+                                        
+                                        with file_tabs[2]:
+                                            st.subheader("⚙️ container-optimized.options")
+                                            st.markdown(f"**Location**: `nodes/{node['name']}/container-optimized.options`")
+                                            st.markdown(f"**Purpose**: Version-specific JVM options for {st.session_state.cluster_config['es_version']}")
+                                            jvm_content = generate_jvm_options_file(node, st.session_state.cluster_config)
+                                            st.code(jvm_content, language='bash')
+                                            st.success("✅ **Features**: Container-friendly logging, version-appropriate GC settings, memory optimization")
+                                        
+                                        with file_tabs[3]:
+                                            st.subheader("📝 config/elasticsearch.yml")
+                                            st.markdown(f"**Location**: `nodes/{node['name']}/config/elasticsearch.yml`")
+                                            st.markdown("**Purpose**: Basic Elasticsearch configuration file")
+                                            es_config = generate_elasticsearch_yml(node, st.session_state.cluster_config)
+                                            st.code(es_config, language='yaml')
+                                            st.info("✅ **Features**: Version-specific syntax, role configuration, discovery settings")
+                                        
+                                        with file_tabs[4]:
+                                            st.subheader("📋 README.md")
+                                            st.markdown(f"**Location**: `nodes/{node['name']}/README.md`")
+                                            st.markdown("**Purpose**: Node-specific documentation and management guide")
+                                            node_readme = generate_node_readme(node, st.session_state.cluster_config)
+                                            st.code(node_readme, language='markdown')
+                                            st.info("✅ **Content**: Node details, management commands, troubleshooting")
+                                        
+                                        # Show folder summary
+                                        st.markdown("---")
+                                        st.success(f"""
+                                        📦 **Folder: nodes/{node['name']}/**
+                                        - `docker-compose.yml` - Complete container configuration
+                                        - `run.sh` - Start this node with validation
+                                        - `container-optimized.options` - Version-specific JVM options
+                                        - `config/elasticsearch.yml` - Basic ES configuration
+                                        - `init.sh` - Legacy initialization script
+                                        - `README.md` - Node-specific documentation
+                                        - `data/`, `logs/`, `backups/` - Volume directories (auto-created)
+                                        
+                                        **Quick Start**: `cd nodes/{node['name']} && ./run.sh`
+                                        """)
+                            
+                            st.markdown("---")
+                            st.success(f"""
+                            📦 **Complete Production Package Summary**:
+                            - **Global scripts**: cluster-init.sh, start-all.sh, stop-all.sh, README.md
+                            - **Organized folders**: {len(nodes)} node folders under `nodes/` directory
+                            - **Per-node files**: Docker Compose, run scripts, JVM options, configs, documentation
+                            - **Container optimizations**: Version-specific JVM options for ES {st.session_state.cluster_config['es_version']}
+                            
+                            **Quick Start**: 
+                            1. Extract and run `./cluster-init.sh` (validate system)
+                            2. Run `./start-all.sh` (start entire cluster)
+                            3. Or individual: `cd nodes/<node-name> && ./run.sh`
+                            """)
                     else:
                         st.warning("No nodes configured for preview")
 
