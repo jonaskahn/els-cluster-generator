@@ -1,64 +1,3 @@
-"""
-Elasticsearch Cluster Configuration Generator
-===========================================
-
-A comprehensive tool for generating production-ready Elasticsearch clusters with Docker Compose.
-
-🆕 **VERSION-SPECIFIC COMPATIBILITY UPDATE** 🆕
-===============================================
-This tool now generates version-specific configurations for Elasticsearch v6.x, v7.x, and v8.x:
-
-**v6.x Configuration:**
-- Uses discovery.zen.ping.unicast.hosts for cluster discovery
-- Uses discovery.zen.minimum_master_nodes for split-brain prevention
-- Node roles: node.master, node.data, node.ingest (boolean flags)
-- X-Pack settings with basic syntax (no ILM support)
-
-**v7.x Configuration:**  
-- Hybrid approach: zen discovery (v7.0-7.6) or seed hosts (v7.7+)
-- cluster.initial_master_nodes for bootstrap
-- Node roles: legacy boolean flags (compatible)
-- Full X-Pack support including ILM
-
-**v8.x Configuration:**
-- Modern discovery.seed_hosts configuration
-- cluster.initial_master_nodes for bootstrap  
-- Node roles: node.roles array syntax ["master", "data", "ingest"]
-- Enhanced X-Pack with explicit security settings (disabled by default)
-- Security features explicitly configured due to v8 defaults
-
-Features:
-- 3 node types: Master-only, Master+Data+Ingest, Data+Ingest only  
-- Automatic optimization based on hardware specs
-- Split-brain prevention with proper master node calculation
-- 50+ production-ready settings auto-configured
-- Role-specific tuning and capacity estimates
-
-UI Enhancement Opportunity:
---------------------------
-This app can be enhanced with streamlit-shadcn-ui for modern UI components:
-
-Installation:
-pip install streamlit-shadcn-ui
-
-Usage Examples:
-import streamlit_shadcn_ui as ui
-
-# Modern button
-ui.button("Generate Config", key="gen_btn", variant="default")
-
-# Enhanced cards  
-ui.card(content="Node Configuration", key="node_card")
-
-# Better metrics display
-ui.metric(label="Heap Size", value="16GB", delta="50% of RAM")
-
-# Sleek badges for node roles
-ui.badge(text="Master", variant="secondary") 
-
-See: https://github.com/ObservedObserver/streamlit-shadcn-ui
-"""
-
 import streamlit as st
 import json
 import yaml
@@ -66,9 +5,6 @@ from datetime import datetime
 import zipfile
 import io
 from typing import Dict, List, Any
-
-# TODO: Uncomment after installing streamlit-shadcn-ui
-# import streamlit_shadcn_ui as ui
 
 # Configure Streamlit page
 st.set_page_config(
@@ -571,6 +507,257 @@ def get_version_specific_settings(es_version, node, nodes, cluster_name, config)
         'version_minor': version_minor
     }
 
+def generate_development_docker_compose(config):
+    """Generate single Docker Compose file for development with all nodes"""
+    cluster_name = config['cluster_name']
+    es_version = config['es_version']
+    nodes = config['nodes']
+    
+    # Get version-specific configuration for the first node (all nodes will use same base config)
+    version_config = get_version_specific_settings(es_version, nodes[0], nodes, cluster_name, config)
+    
+    compose_content = f"""# Development Docker Compose for {cluster_name}
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Elasticsearch Version: {es_version}
+# Mode: Development (All nodes in single file)
+# Nodes: {len(nodes)} ({', '.join([node['name'] for node in nodes])})
+
+version: '3.8'
+
+services:"""
+    
+    # Generate services for each node
+    for node in nodes:
+        # Get version-specific configuration for this node
+        node_version_config = get_version_specific_settings(es_version, node, nodes, cluster_name, config)
+        optimal_settings = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
+        
+        # Build JVM options
+        base_jvm_opts = f"-Xms{optimal_settings['heap_size']} -Xmx{optimal_settings['heap_size']}"
+        
+        # Version-specific JVM options
+        if node_version_config['version_major'] == 6:
+            if optimal_settings['jvm_settings']['gc_collector'] == 'G1GC':
+                version_specific_opts = [
+                    '-XX:+UseG1GC',
+                    '-XX:MaxGCPauseMillis=250',
+                    '-XX:G1HeapRegionSize=16m',
+                    '-XX:+PrintGC',
+                    '-XX:+PrintGCDetails',
+                    '-XX:+PrintGCTimeStamps',
+                    '-Xloggc:/dev/stderr'
+                ]
+            else:
+                version_specific_opts = [
+                    '-XX:+UseConcMarkSweepGC',
+                    f'-XX:CMSInitiatingOccupancyFraction={optimal_settings["jvm_settings"]["cms_initiating_occupancy_fraction"]}',
+                    '-XX:+UseCMSInitiatingOccupancyOnly',
+                    '-XX:+PrintGC',
+                    '-XX:+PrintGCDetails',
+                    '-Xloggc:/dev/stderr'
+                ]
+            
+            version_specific_opts.extend([
+                '-XX:+HeapDumpOnOutOfMemoryError',
+                '-XX:HeapDumpPath=/usr/share/elasticsearch/data',
+                '-Djava.awt.headless=true',
+                '-Dfile.encoding=UTF-8'
+            ])
+        
+        elif node_version_config['version_major'] == 7:
+            version_specific_opts = [
+                '-XX:+UseG1GC',
+                '-XX:MaxGCPauseMillis=200',
+                '-XX:G1HeapRegionSize=16m',
+                '-Xlog:disable',
+                '-Xlog:all=warning:stderr:utctime,level,tags',
+                '-Xlog:gc=debug:stderr:utctime',
+                '-XX:+HeapDumpOnOutOfMemoryError',
+                '-XX:HeapDumpPath=/usr/share/elasticsearch/data',
+                '-XX:+ExitOnOutOfMemoryError',
+                '-Djava.awt.headless=true',
+                '-Dfile.encoding=UTF-8'
+            ]
+        
+        elif node_version_config['version_major'] == 8:
+            version_specific_opts = [
+                '-XX:+UseG1GC',
+                '-XX:MaxGCPauseMillis=200',
+                '-XX:G1HeapRegionSize=16m',
+                '-XX:+UseStringDeduplication',
+                '-Xlog:disable',
+                '-Xlog:all=warning:stderr:utctime,level,tags',
+                '-Xlog:gc=debug:stderr:utctime',
+                '-XX:+HeapDumpOnOutOfMemoryError',
+                '-XX:HeapDumpPath=/usr/share/elasticsearch/data',
+                '-XX:+ExitOnOutOfMemoryError',
+                '-XX:+CrashOnOutOfMemoryError',
+                '-Djava.awt.headless=true',
+                '-Dfile.encoding=UTF-8'
+            ]
+        
+        # Build complete JVM options string
+        jvm_opts = f"{base_jvm_opts} " + " ".join(version_specific_opts)
+        
+        # For development mode, use container names for discovery instead of hostnames
+        # Update discovery settings to use container names
+        dev_discovery_settings = []
+        for setting in node_version_config['discovery_settings']:
+            if 'discovery.seed_hosts' in setting:
+                # Replace hostnames with container names for development
+                container_names = ','.join([f'"{n["name"]}:9300"' for n in nodes])
+                dev_discovery_settings.append(f"      - discovery.seed_hosts=[{container_names}]")
+            elif 'discovery.zen.ping.unicast.hosts' in setting:
+                # Replace hostnames with container names for development
+                container_names = ','.join([n['name'] for n in nodes])
+                dev_discovery_settings.append(f"      - discovery.zen.ping.unicast.hosts={container_names}")
+            else:
+                dev_discovery_settings.append(setting)
+        
+        # Version-specific thread pool settings
+        thread_pool_settings = []
+        if node_version_config['version_major'] <= 7:
+            thread_pool_settings = [
+                f"      - thread_pool.search.size={optimal_settings['thread_pools']['search']}",
+                "      - thread_pool.search.queue_size=2000",
+                f"      - thread_pool.index.size={optimal_settings['thread_pools']['index']}",
+                "      - thread_pool.index.queue_size=1000",
+                f"      - thread_pool.bulk.size={optimal_settings['thread_pools']['bulk']}",
+                "      - thread_pool.bulk.queue_size=2000",
+                f"      - thread_pool.write.size={optimal_settings['thread_pools']['write']}",
+                "      - thread_pool.write.queue_size=1000",
+                f"      - thread_pool.get.size={optimal_settings['thread_pools']['get']}",
+                "      - thread_pool.get.queue_size=1000"
+            ]
+        else:
+            thread_pool_settings = [
+                f"      - thread_pool.search.size={optimal_settings['thread_pools']['search']}",
+                "      - thread_pool.search.queue_size=2000",
+                f"      - thread_pool.write.size={optimal_settings['thread_pools']['write']}",
+                "      - thread_pool.write.queue_size=2000",
+                f"      - thread_pool.get.size={optimal_settings['thread_pools']['get']}",
+                "      - thread_pool.get.queue_size=1000"
+            ]
+        
+        compose_content += f"""
+  {node['name']}:
+    image: docker.elastic.co/elasticsearch/elasticsearch:{es_version}
+    container_name: {node['name']}
+    hostname: {node['name']}
+    environment:
+      # ==================== CLUSTER CONFIGURATION ====================
+      - cluster.name={cluster_name}
+      - node.name={node['name']}
+      
+      # ==================== NODE ROLES ({es_version} syntax) ====================
+{chr(10).join(node_version_config['role_settings'])}
+      
+      # ==================== MEMORY OPTIMIZATION ====================
+      - "ES_JAVA_OPTS={jvm_opts}"
+      - bootstrap.memory_lock=true
+      
+      # ==================== DISCOVERY CONFIGURATION (Development Mode) ====================
+{chr(10).join(dev_discovery_settings)}
+      
+      # ==================== PERFORMANCE OPTIMIZATION ====================
+      # Memory Management
+      - indices.memory.index_buffer_size={optimal_settings['memory_settings']['index_buffer_size']}
+      - indices.memory.min_index_buffer_size=128mb
+      - indices.breaker.total.limit={optimal_settings['memory_settings']['total_breaker_limit']}
+      - indices.breaker.request.limit={optimal_settings['memory_settings']['request_breaker_limit']}
+      - indices.breaker.fielddata.limit={optimal_settings['memory_settings']['fielddata_breaker_limit']}
+      
+      # Cache Configuration ({node['ram_gb']}GB RAM optimized)
+      - indices.queries.cache.size={optimal_settings['cache_settings']['queries_cache_size']}
+      - indices.fielddata.cache.size={optimal_settings['cache_settings']['fielddata_cache_size']}
+      - indices.requests.cache.size={optimal_settings['cache_settings']['requests_cache_size']}
+      
+      # Thread Pool Configuration ({node['cpu_cores']}-core optimized, {', '.join(node['roles'])} node)
+{chr(10).join(thread_pool_settings)}
+      
+      # ==================== RECOVERY & REBALANCING ====================
+      - indices.recovery.max_bytes_per_sec={optimal_settings['recovery_settings']['max_bytes_per_sec']}
+      - cluster.routing.allocation.node_concurrent_recoveries={optimal_settings['recovery_settings']['node_concurrent_recoveries']}
+      - cluster.routing.allocation.node_concurrent_incoming_recoveries={optimal_settings['recovery_settings']['node_concurrent_incoming_recoveries']}
+      - cluster.routing.allocation.node_concurrent_outgoing_recoveries={optimal_settings['recovery_settings']['node_concurrent_outgoing_recoveries']}
+      - cluster.routing.allocation.cluster_concurrent_rebalance={optimal_settings['recovery_settings']['cluster_concurrent_rebalance']}
+      
+      # ==================== CLUSTER LIMITS & SAFETY ====================
+      - cluster.max_shards_per_node={optimal_settings['cluster_settings']['max_shards_per_node']}
+      - cluster.routing.allocation.total_shards_per_node={optimal_settings['cluster_settings']['total_shards_per_node']}
+      - action.destructive_requires_name={'true' if optimal_settings['cluster_settings']['action_destructive_requires_name'] else 'false'}
+      
+      # ==================== PERFORMANCE MONITORING ====================
+      - logger.index.search.slowlog.threshold.query.warn={optimal_settings['monitoring_settings']['slow_query_threshold_warn']}
+      - logger.index.search.slowlog.threshold.query.info={optimal_settings['monitoring_settings']['slow_query_threshold_info']}
+      - logger.index.search.slowlog.threshold.fetch.warn={optimal_settings['monitoring_settings']['slow_fetch_threshold_warn']}
+      - logger.index.indexing.slowlog.threshold.index.warn={optimal_settings['monitoring_settings']['slow_index_threshold_warn']}
+      
+      # ==================== X-PACK FEATURES ({es_version} syntax) ====================
+{chr(10).join(node_version_config['xpack_settings'])}
+      
+      # ==================== NETWORK CONFIGURATION (Development Mode) ====================
+      - network.host=0.0.0.0
+      - http.port=9200
+      - transport.tcp.port=9300
+      - http.cors.enabled=true
+      - http.cors.allow-origin="*"
+      - transport.tcp.keep_alive={'true' if optimal_settings['network_settings']['tcp_keep_alive'] else 'false'}
+      - transport.tcp.reuse_address={'true' if optimal_settings['network_settings']['tcp_reuse_address'] else 'false'}
+      - transport.tcp.connect_timeout={optimal_settings['network_settings']['tcp_connect_timeout']}
+      
+    ports:
+      - "{node['http_port']}:9200"
+      - "{node['transport_port']}:9300"
+      
+    volumes:
+      - ./{node['name']}/data:/usr/share/elasticsearch/data
+      - ./{node['name']}/logs:/usr/share/elasticsearch/logs
+      - ./{node['name']}/backups:/usr/share/elasticsearch/backups
+      
+    networks:
+      - elasticsearch-net
+      
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+      
+    # ==================== RESOURCE LIMITS ====================
+    mem_limit: {node['ram_gb']}g
+    cpus: '{node['cpu_cores']}.0'
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s"""
+    
+    compose_content += """
+
+networks:
+  elasticsearch-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+
+# Development mode volumes (optional - uncomment if you want persistent volumes)
+# volumes:"""
+    
+    for node in nodes:
+        compose_content += f"""
+#   {node['name']}_data:
+#   {node['name']}_logs:"""
+    
+    return compose_content
+
 def generate_individual_docker_compose(node, config):
     """Generate individual Docker Compose file for a single node with version-specific settings"""
     cluster_name = config['cluster_name']
@@ -816,9 +1003,6 @@ services:
       - ./{node['name']}/data:/usr/share/elasticsearch/data
       - ./{node['name']}/logs:/usr/share/elasticsearch/logs
       - ./{node['name']}/backups:/usr/share/elasticsearch/backups
-      - ./{node['name']}/config:/usr/share/elasticsearch/config
-      # **NEW**: Custom JVM options support (recommended by Elastic docs)
-      - ./{node['name']}/jvm.options.d:/usr/share/elasticsearch/config/jvm.options.d
       
     extra_hosts:
 {extra_hosts_content}
@@ -1126,7 +1310,6 @@ services:"""
       - ./{node['name']}/data:/usr/share/elasticsearch/data
       - ./{node['name']}/logs:/usr/share/elasticsearch/logs
       - ./{node['name']}/backups:/usr/share/elasticsearch/backups
-      - ./{node['name']}/config:/usr/share/elasticsearch/config
       
     networks:
       - elasticsearch-net
@@ -1266,6 +1449,240 @@ ESTIMATED_INDEXING_RATE_DOCS_PER_SEC={optimal_settings['capacity_estimates']['in
         env_files[f"{node['name']}.env"] = env_content
     
     return env_files
+
+def generate_development_files(config):
+    """Generate simplified files for development mode"""
+    cluster_files = {}
+    nodes = config['nodes']
+    cluster_name = config['cluster_name']
+    
+    # Generate single Docker Compose file
+    compose_content = generate_development_docker_compose(config)
+    cluster_files["docker-compose.yml"] = compose_content
+    
+    # Generate simple startup script
+    startup_script = f"""#!/bin/bash
+# Development Startup Script for {cluster_name}
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+set -e
+
+echo "🚀 Starting Elasticsearch Development Cluster: {cluster_name}"
+echo "📊 Nodes: {len(nodes)} ({', '.join([node['name'] for node in nodes])})"
+echo "🔧 Mode: Development (Single Docker Compose)"
+echo "==============================================="
+
+# Check if Docker is running
+if ! docker info > /dev/null 2>&1; then
+    echo "❌ Docker is not running. Please start Docker first."
+    exit 1
+fi
+
+echo "✅ Docker is running"
+
+# Create directories for all nodes
+echo "📁 Creating directories..."
+"""
+    
+    for node in nodes:
+        startup_script += f"""
+mkdir -p ./{node['name']}/{{data,logs,backups,config,jvm.options.d}}"""
+    
+    startup_script += f"""
+
+# Set basic permissions (if on Linux/Mac)
+if [[ "$OSTYPE" != "msys" && "$OSTYPE" != "win32" ]]; then
+    echo "🔧 Setting permissions..."
+    for dir in {' '.join([f"./{node['name']}" for node in nodes])}; do
+        sudo chown -R 1000:1000 "$dir/" 2>/dev/null || echo "⚠️ Could not set ownership for $dir"
+        chmod -R 755 "$dir/" 2>/dev/null || echo "⚠️ Could not set permissions for $dir"
+    done
+fi
+
+# Set vm.max_map_count if possible
+if [[ "$OSTYPE" != "msys" && "$OSTYPE" != "win32" ]]; then
+    current_max_map_count=$(sysctl vm.max_map_count 2>/dev/null | awk '{{print $3}}' || echo "0")
+    if [[ "$current_max_map_count" -lt 262144 ]] 2>/dev/null; then
+        echo "🔧 Setting vm.max_map_count..."
+        sudo sysctl -w vm.max_map_count=262144 2>/dev/null || echo "⚠️ Could not set vm.max_map_count"
+    fi
+fi
+
+echo "🚀 Starting all containers..."
+docker-compose up -d
+
+echo "⏳ Waiting for cluster to be ready..."
+for i in {{1..60}}; do
+    if curl -f http://localhost:{nodes[0]['http_port']}/_cluster/health > /dev/null 2>&1; then
+        echo "✅ Cluster is ready!"
+        break
+    fi
+    
+    if [[ $i -eq 60 ]]; then
+        echo "❌ Cluster failed to become ready after 5 minutes"
+        echo "📋 Check logs with: docker-compose logs"
+        exit 1
+    fi
+    
+    echo "⏳ Waiting for cluster... ($i/60)"
+    sleep 5
+done
+
+echo ""
+echo "==============================================="
+echo "✅ Development cluster started successfully!"
+echo ""
+echo "🔗 Access URLs:"
+"""
+    
+    for i, node in enumerate(nodes):
+        startup_script += f"""
+echo "   {node['name']}: http://localhost:{node['http_port']}" """
+    
+    startup_script += f"""
+
+echo ""
+echo "📊 Cluster Health:"
+curl -s http://localhost:{nodes[0]['http_port']}/_cluster/health?pretty
+
+echo ""
+echo "🖥️ Nodes:"
+curl -s http://localhost:{nodes[0]['http_port']}/_cat/nodes?v
+
+echo ""
+echo "📋 Management Commands:"
+echo "   View logs:     docker-compose logs"
+echo "   Follow logs:   docker-compose logs -f"
+echo "   Stop cluster:  docker-compose down"
+echo "   Restart:       docker-compose restart"
+echo "==============================================="
+"""
+    
+    cluster_files["start.sh"] = startup_script
+    
+    # Generate simple README
+    readme_content = f"""# Elasticsearch Development Cluster: {config['cluster_name']}
+Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## 🛠️ Development Mode
+This package contains a simplified development setup with all nodes in a single Docker Compose file.
+
+## Cluster Overview
+- **Version**: {config['es_version']}
+- **Nodes**: {len(nodes)}
+- **Mode**: Development (Single file)
+
+## Node Configuration
+"""
+    
+    for i, node in enumerate(nodes):
+        optimal = calculate_optimal_settings(node['cpu_cores'], node['ram_gb'], node['roles'])
+        readme_content += f"""
+### {node['name']} (localhost:{node['http_port']})
+- **Roles**: {', '.join(node['roles']).title()}
+- **Hardware**: {node['cpu_cores']} cores, {node['ram_gb']}GB RAM
+- **Heap Size**: {optimal['heap_size']}
+"""
+    
+    readme_content += f"""
+## Quick Start
+
+### 1. Start the cluster
+```bash
+chmod +x start.sh
+./start.sh
+```
+
+### 2. Alternative: Using Docker Compose directly
+```bash
+# Create directories
+{' && '.join([f'mkdir -p ./{node["name"]}/{{data,logs,backups,config}}' for node in nodes])}
+
+# Start cluster
+docker-compose up -d
+
+# Check status
+docker-compose ps
+```
+
+### 3. Access the cluster
+- Primary node: http://localhost:{nodes[0]['http_port']}
+- Cluster health: http://localhost:{nodes[0]['http_port']}/_cluster/health
+- All nodes: http://localhost:{nodes[0]['http_port']}/_cat/nodes?v
+
+## Management Commands
+
+### Stop the cluster
+```bash
+docker-compose down
+```
+
+### View logs
+```bash
+docker-compose logs
+# Or for specific node:
+docker-compose logs {nodes[0]['name']}
+```
+
+### Restart the cluster
+```bash
+docker-compose restart
+```
+
+### Clean shutdown with data removal
+```bash
+docker-compose down -v
+```
+
+## Development Benefits
+- ✅ **Single file**: Easy to manage and understand
+- ✅ **Container networking**: Nodes communicate via Docker network names
+- ✅ **No host mapping**: No need for extra hosts configuration
+- ✅ **Quick startup**: All containers start together
+- ✅ **Easy debugging**: Simple logging and monitoring
+
+## Files Included
+- `docker-compose.yml` - Complete cluster definition
+- `start.sh` - Simple startup script with health checks
+- `README.md` - This documentation
+
+## X-Pack Features
+"""
+    
+    for feature, enabled in config['xpack_settings'].items():
+        status = "✅ Enabled" if enabled else "❌ Disabled"
+        readme_content += f"- **{feature.title()}**: {status}\n"
+    
+    readme_content += """
+## Troubleshooting
+
+### Container won't start
+1. Check Docker is running: `docker info`
+2. Check system resources (memory, disk space)
+3. Check logs: `docker-compose logs [node_name]`
+
+### Permission errors (Linux/Mac)
+```bash
+sudo chown -R 1000:1000 ./*/
+```
+
+### Memory issues
+Ensure vm.max_map_count is set correctly:
+```bash
+sudo sysctl -w vm.max_map_count=262144
+```
+
+## Converting to Production
+For production deployment:
+1. Generate a new configuration in "Production Mode"
+2. Use individual Docker Compose files per node
+3. Configure proper networking and host mappings
+4. Implement proper backup and monitoring strategies
+"""
+    
+    cluster_files["README.md"] = readme_content
+    
+    return cluster_files
 
 def generate_cluster_files(config):
     """Generate all files for the cluster (compose, env, init scripts)"""
@@ -2661,6 +3078,45 @@ with main_col:
     with tab3:
         st.header("📄 Generate Configuration Files")
         
+        # Mode selection
+        st.subheader("🎯 Deployment Mode")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            deployment_mode = st.radio(
+                "🚀 Select Deployment Mode",
+                options=["development", "production"],
+                format_func=lambda x: "🛠️ Development Mode" if x == "development" else "🏭 Production Mode",
+                help="Choose between development (single file) or production (individual files) deployment",
+                index=0  # Default to development mode for easier testing
+            )
+            
+            # Visual indicator for selected mode
+            if deployment_mode == "development":
+                st.success("🛠️ **Development Mode Selected**")
+            else:
+                st.info("🏭 **Production Mode Selected**")
+        
+        with col2:
+            if deployment_mode == "development":
+                st.info("""
+                **🛠️ Development Mode:**
+                - Single `docker-compose.yml` file
+                - All containers in one file for easy local testing
+                - Containers communicate via Docker network names
+                - No extra host mappings needed
+                - Perfect for local development and testing
+                """)
+            else:
+                st.info("""
+                **🏭 Production Mode:**
+                - Individual Docker Compose files per node
+                - Host-to-host communication with extra hosts
+                - Advanced initialization and run scripts
+                - Suitable for distributed deployment
+                - Production-ready with health checks
+                """)
+        
         # Version-specific information
         with st.expander("🔧 **Version-Specific Configuration Guide**", expanded=False):
             current_version = st.session_state.cluster_config['es_version']
@@ -2793,31 +3249,56 @@ with main_col:
             else:
                 st.success(f"✅ Configuration validated successfully for Elasticsearch {current_version}!")
                 
-                # Generate cluster files
-                st.info("🚀 **Enhanced Package**: Individual Docker Compose files + comprehensive init.sh and run scripts for each node!")
-                
-                with st.expander("📋 **What's Included in the Package**", expanded=False):
-                    st.markdown("""
-                    **System-wide Scripts:**
-                    - `init.sh` - Comprehensive system initialization (Docker, permissions, limits)
-                    - `README.md` - Complete documentation and usage instructions
+                # Generate cluster files based on mode
+                if deployment_mode == "development":
+                    st.info("🛠️ **Development Package**: Single Docker Compose file with simple startup script!")
                     
-                    **Per-Node Files:**
-                    - `docker-compose-<node>.yml` - Complete Docker Compose with integrated settings
-                    - `run-<node>.sh` - Node-specific run script with health checks and validation
-                    - `init-<node>.sh` - Legacy initialization script (backwards compatibility)
+                    with st.expander("📋 **What's Included in Development Package**", expanded=False):
+                        st.markdown("""
+                        **Development Mode Files:**
+                        - `docker-compose.yml` - Single file with all nodes
+                        - `start.sh` - Simple startup script with health checks
+                        - `README.md` - Development-focused documentation
+                        
+                        **Key Features:**
+                        - ✅ **Single file deployment**: All containers in one Docker Compose
+                        - ✅ **Container networking**: No extra hosts needed
+                        - ✅ **Quick startup**: Simple `./start.sh` command
+                        - ✅ **Easy debugging**: Standard Docker Compose commands
+                        - ✅ **Local development**: Perfect for testing and development
+                        """)
+                else:
+                    st.info("🏭 **Production Package**: Individual Docker Compose files + comprehensive init scripts!")
                     
-                    **Key Features:**
-                    - ✅ Docker installation and setup
-                    - ✅ System limits configuration (vm.max_map_count, ulimits)
-                    - ✅ Directory creation and permissions
-                    - ✅ Pre-flight checks and validation
-                    - ✅ Health monitoring and status reporting
-                    - ✅ Automatic hostname resolution between nodes
-                    """)
+                    with st.expander("📋 **What's Included in Production Package**", expanded=False):
+                        st.markdown("""
+                        **System-wide Scripts:**
+                        - `init.sh` - Comprehensive system initialization (Docker, permissions, limits)
+                        - `README.md` - Complete documentation and usage instructions
+                        
+                        **Per-Node Files:**
+                        - `docker-compose-<node>.yml` - Complete Docker Compose with integrated settings
+                        - `run-<node>.sh` - Node-specific run script with health checks and validation
+                        - `init-<node>.sh` - Legacy initialization script (backwards compatibility)
+                        
+                        **Key Features:**
+                        - ✅ Docker installation and setup
+                        - ✅ System limits configuration (vm.max_map_count, ulimits)
+                        - ✅ Directory creation and permissions
+                        - ✅ Pre-flight checks and validation
+                        - ✅ Health monitoring and status reporting
+                        - ✅ Automatic hostname resolution between nodes
+                        """)
                 
-                if st.button("🚀 Generate Cluster Files", use_container_width=True, type="primary"):
-                    cluster_files = generate_cluster_files(st.session_state.cluster_config)
+                # Generate button text based on mode
+                button_text = "🛠️ Generate Development Files" if deployment_mode == "development" else "🏭 Generate Production Files"
+                
+                if st.button(button_text, use_container_width=True, type="primary"):
+                    # Generate files based on mode
+                    if deployment_mode == "development":
+                        cluster_files = generate_development_files(st.session_state.cluster_config)
+                    else:
+                        cluster_files = generate_cluster_files(st.session_state.cluster_config)
                     
                     # Create a ZIP file with all cluster files
                     zip_buffer = io.BytesIO()
@@ -2827,73 +3308,117 @@ with main_col:
                     
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     cluster_name = st.session_state.cluster_config['cluster_name'].replace(' ', '_').lower()
+                    mode_suffix = "dev" if deployment_mode == "development" else "prod"
+                    
+                    # Download button text based on mode
+                    download_text = "📦 Download Development Package" if deployment_mode == "development" else "📦 Download Production Package"
+                    help_text = "Contains single Docker Compose file and simple startup script" if deployment_mode == "development" else "Contains complete Docker Compose files, init scripts, and README for each node"
                     
                     st.download_button(
-                        label="📦 Download Complete Cluster Package",
+                        label=download_text,
                         data=zip_buffer.getvalue(),
-                        file_name=f"{cluster_name}_elasticsearch_cluster_{timestamp}.zip",
+                        file_name=f"{cluster_name}_elasticsearch_{mode_suffix}_{timestamp}.zip",
                         mime="application/zip",
                         use_container_width=True,
-                        help="Contains complete Docker Compose files, init scripts, and README for each node"
+                        help=help_text
                     )
                 
                 # Preview generated files
-                if st.checkbox("👁️ Preview Individual Node Files"):
+                preview_text = "👁️ Preview Development Files" if deployment_mode == "development" else "👁️ Preview Production Files"
+                if st.checkbox(preview_text):
                     nodes = st.session_state.cluster_config['nodes']
                     
-                    # Create tabs for each node
                     if len(nodes) > 0:
-                        tab_names = [f"📄 {node['name']}" for node in nodes]
-                        node_tabs = st.tabs(tab_names)
+                        if deployment_mode == "development":
+                            # Development mode preview - show the single docker compose and startup script
+                            st.markdown("### 🛠️ Development Mode Files Preview")
+                            
+                            dev_tab1, dev_tab2, dev_tab3 = st.tabs(["🐳 Docker Compose", "🚀 Startup Script", "📖 README"])
+                            
+                            with dev_tab1:
+                                st.subheader("🐳 docker-compose.yml")
+                                st.markdown("**Purpose**: Single file containing all cluster nodes")
+                                compose_content = generate_development_docker_compose(st.session_state.cluster_config)
+                                st.code(compose_content, language='yaml')
+                                st.info("✅ **Development optimized**: Container networking, no extra hosts, simplified configuration")
+                            
+                            with dev_tab2:
+                                st.subheader("🚀 start.sh")
+                                st.markdown("**Purpose**: Simple startup script with health checks")
+                                dev_files = generate_development_files(st.session_state.cluster_config)
+                                st.code(dev_files["start.sh"], language='bash')
+                                st.success("✅ **Features**: Docker checks, directory creation, cluster startup, health monitoring")
+                            
+                            with dev_tab3:
+                                st.subheader("📖 README.md")
+                                st.markdown("**Purpose**: Development-focused documentation")
+                                # Use the same dev_files variable to avoid regenerating
+                                st.code(dev_files["README.md"], language='markdown')
+                                st.info("✅ **Content**: Quick start guide, troubleshooting, development tips")
+                            
+                            st.markdown("---")
+                            st.success(f"""
+                            📦 **Development Package Summary**:
+                            - `docker-compose.yml` - All {len(nodes)} nodes in single file
+                            - `start.sh` - Simple startup script
+                            - `README.md` - Development documentation
+                            
+                            **Quick Start**: Extract files and run `./start.sh`
+                            """)
                         
-                        for i, node in enumerate(nodes):
-                            with node_tabs[i]:
-                                st.markdown(f"### 🖥️ {node['name']} Configuration Files")
-                                st.markdown(f"**Roles**: {', '.join(node['roles']).title()} | **Hardware**: {node['cpu_cores']} cores, {node['ram_gb']}GB RAM")
-                                
-                                # Create tabs for different file types
-                                file_tab1, file_tab2, file_tab3, file_tab4 = st.tabs(["🐳 Docker Compose", "🚀 Run Script", "⚙️ System Init", "📜 Legacy Init"])
-                                
-                                with file_tab1:
-                                    st.subheader("🐳 Docker Compose File")
-                                    compose_content = generate_individual_docker_compose(node, st.session_state.cluster_config)
-                                    st.code(compose_content, language='yaml')
-                                    st.info("✅ **All settings integrated**: Environment variables, X-Pack features, and configurations are included directly in the Docker Compose file.")
-                                
-                                with file_tab2:
-                                    st.subheader(f"🚀 Run Script: run-{node['name']}.sh")
-                                    st.markdown("**Purpose**: Start this specific node with comprehensive health checks and validation")
-                                    run_content = generate_node_run_script(node, st.session_state.cluster_config)
-                                    st.code(run_content, language='bash')
-                                    st.success("✅ **Features**: Pre-flight checks, directory validation, permissions check, health monitoring")
-                                
-                                with file_tab3:
-                                    st.subheader("⚙️ System Initialization: init.sh")
-                                    st.markdown("**Purpose**: One-time system setup for Docker, permissions, and system limits")
-                                    init_content = generate_system_init_script(node, st.session_state.cluster_config)
-                                    st.code(init_content, language='bash')
-                                    st.info("✅ **Features**: Docker installation, system limits (vm.max_map_count), ulimits, directory creation, permissions")
-                                
-                                with file_tab4:
-                                    st.subheader(f"📜 Legacy Init: init-{node['name']}.sh")
-                                    st.markdown("**Purpose**: Basic node initialization (kept for backwards compatibility)")
-                                    legacy_init_content = generate_init_script(node, st.session_state.cluster_config)
-                                    st.code(legacy_init_content, language='bash')
-                                    st.warning("⚠️ **Legacy**: Use the System Init and Run scripts for better functionality")
-                                
-                                # Show file summary
-                                st.markdown("---")
-                                st.info(f"""
-                                📦 **Complete Package for {node['name']}**:
-                                - `docker-compose-{node['name']}.yml` - Complete Docker Compose with integrated settings
-                                - `run-{node['name']}.sh` - Node-specific run script with validation and health checks
-                                - `init.sh` - System-wide initialization (Docker, permissions, limits)
-                                - `init-{node['name']}.sh` - Legacy initialization script
-                                
-                                **Recommended workflow**:
-                                1. Run `init.sh` once for system setup
-                                2. Run `run-{node['name']}.sh` to start this node
-                                """)
+                        else:
+                            # Production mode preview - show individual node files
+                            tab_names = [f"📄 {node['name']}" for node in nodes]
+                            node_tabs = st.tabs(tab_names)
+                            
+                            for i, node in enumerate(nodes):
+                                with node_tabs[i]:
+                                    st.markdown(f"### 🏭 {node['name']} Production Files")
+                                    st.markdown(f"**Roles**: {', '.join(node['roles']).title()} | **Hardware**: {node['cpu_cores']} cores, {node['ram_gb']}GB RAM")
+                                    
+                                    # Create tabs for different file types
+                                    file_tab1, file_tab2, file_tab3, file_tab4 = st.tabs(["🐳 Docker Compose", "🚀 Run Script", "⚙️ System Init", "📜 Legacy Init"])
+                                    
+                                    with file_tab1:
+                                        st.subheader("🐳 Docker Compose File")
+                                        compose_content = generate_individual_docker_compose(node, st.session_state.cluster_config)
+                                        st.code(compose_content, language='yaml')
+                                        st.info("✅ **Production ready**: Extra hosts mapping, individual networking, comprehensive settings")
+                                    
+                                    with file_tab2:
+                                        st.subheader(f"🚀 Run Script: run-{node['name']}.sh")
+                                        st.markdown("**Purpose**: Start this specific node with comprehensive health checks and validation")
+                                        run_content = generate_node_run_script(node, st.session_state.cluster_config)
+                                        st.code(run_content, language='bash')
+                                        st.success("✅ **Features**: Pre-flight checks, directory validation, permissions check, health monitoring")
+                                    
+                                    with file_tab3:
+                                        st.subheader("⚙️ System Initialization: init.sh")
+                                        st.markdown("**Purpose**: One-time system setup for Docker, permissions, and system limits")
+                                        init_content = generate_system_init_script(node, st.session_state.cluster_config)
+                                        st.code(init_content, language='bash')
+                                        st.info("✅ **Features**: Docker installation, system limits (vm.max_map_count), ulimits, directory creation, permissions")
+                                    
+                                    with file_tab4:
+                                        st.subheader(f"📜 Legacy Init: init-{node['name']}.sh")
+                                        st.markdown("**Purpose**: Basic node initialization (kept for backwards compatibility)")
+                                        legacy_init_content = generate_init_script(node, st.session_state.cluster_config)
+                                        st.code(legacy_init_content, language='bash')
+                                        st.warning("⚠️ **Legacy**: Use the System Init and Run scripts for better functionality")
+                                    
+                                    # Show file summary
+                                    st.markdown("---")
+                                    st.info(f"""
+                                    📦 **Production Package for {node['name']}**:
+                                    - `docker-compose-{node['name']}.yml` - Individual Docker Compose with host networking
+                                    - `run-{node['name']}.sh` - Node-specific run script with validation and health checks
+                                    - `init.sh` - System-wide initialization (Docker, permissions, limits)
+                                    - `init-{node['name']}.sh` - Legacy initialization script
+                                    
+                                    **Recommended workflow**:
+                                    1. Run `init.sh` once for system setup
+                                    2. Run `run-{node['name']}.sh` to start this node
+                                    """)
                     else:
                         st.warning("No nodes configured for preview")
 
