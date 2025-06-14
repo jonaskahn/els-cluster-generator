@@ -1,99 +1,228 @@
-# Elasticsearch Cluster Configuration Generator
+# Elasticsearch Cluster Generator
 
-A web-based tool for generating production-ready Elasticsearch clusters with Docker Compose.
+A web-based tool for generating production-ready Elasticsearch cluster configurations with Docker Compose.
 
 ## Features
 
-- **Node Types**: Master-only, Master+Data+Ingest, Data+Ingest only
-- **Hardware Optimization**: Automatic settings based on CPU cores and RAM
-- **Split-brain Prevention**: Proper master node calculation
-- **Production Settings**: 50+ optimized configurations
-- **Individual Files**: Separate Docker Compose and init scripts per node
-- **Network Resolution**: Extra hosts configuration for cluster communication
+- **Smart Configuration**: Automatic optimization based on CPU cores and RAM
+- **Node Role Management**: Support for Master, Data, and Ingest nodes
+- **Production Ready**: Pre-configured settings for production environments
+- **Split-brain Prevention**: Automatic calculation of minimum master nodes
+- **Visualization**: Cluster topology and request flow diagrams
+- **Configuration Management**: Save/load cluster configurations
 
-## Requirements
+## Quick Start
 
-- Python 3.7+
-- Docker and Docker Compose
+1. Install dependencies:
 
-## Installation
-
-1. Clone or download this repository
-2. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-## Usage
+2. Run the application:
 
-1. Start the application:
    ```bash
-   streamlit run run.py
+   streamlit run streamlit_app.py
    ```
 
-2. Open your browser to `http://localhost:8501`
+3. Access the web interface at `http://localhost:8501`
 
-3. Configure your cluster:
-   - Set cluster name and domain
-   - Choose number of nodes
-   - Configure node roles and hardware
-   - Enable X-Pack features as needed
+## Generated Output
 
-4. Generate and download cluster files
+The tool generates two different output structures depending on the deployment mode:
 
-## Generated Files
+### Development Mode (Single File)
 
-For each node, the tool generates:
-- `docker-compose-{node}.yml` - Complete Docker Compose configuration
-- `init-{node}.sh` - Initialization script
-- `README.md` - Deployment instructions
+```
+elasticsearch-cluster-dev/
+├── docker-compose.yml          # Single file with all nodes
+├── start.sh                    # Simple startup script
+└── README.md                   # Development documentation
+```
 
-## Node Types
+**Features:**
 
-### Master Only
-- Dedicated master node
-- Lightweight resource allocation
-- Recommended for large clusters (6+ nodes)
+- All nodes in one Docker Compose file
+- Container networking (no host mapping needed)
+- Quick startup and easy debugging
+- Perfect for local development and testing
 
-### Master + Data + Ingest
-- Full-featured node
-- Handles all operations
-- Recommended for small-medium clusters
+### Production Mode (Organized Structure)
 
-### Data + Ingest Only
-- Data storage and processing
-- No master election participation
-- Scales horizontally for large datasets
+```
+elasticsearch-cluster-prod/
+├── README.md                   # Complete cluster documentation
+├── cluster-init.sh             # Global system validation
+├── start-all.sh                # Start all nodes sequentially
+├── stop-all.sh                 # Stop all nodes
+└── nodes/
+    ├── els01/                  # Node 1 folder
+    │   ├── docker-compose.yml  # Individual node configuration
+    │   ├── run.sh              # Node startup with validation
+    │   └── README.md           # Node-specific documentation
+    ├── els02/                  # Node 2 folder
+    │   ├── docker-compose.yml
+    │   ├── run.sh
+    │   └── README.md
+    └── els03/                  # Node 3 folder (if configured)
+        ├── docker-compose.yml
+        ├── run.sh
+        └── README.md
+```
 
-## Configuration Management
+**Features:**
 
-- **Save Config**: Download complete cluster configuration as JSON
-- **Load Config**: Upload previously saved configurations
-- **Validation**: Real-time checks for split-brain prevention
-
-## Production Deployment
-
-1. Extract downloaded cluster files
-2. Make init scripts executable: `chmod +x init-*.sh`
-3. Run nodes individually: `./init-{node}.sh`
-4. Or deploy all at once using the provided instructions
+- Ultra-streamlined: All ES + JVM settings in docker-compose.yml
+- Zero configuration redundancy
+- Individual node folders for easy management
+- Production-ready with comprehensive validation
+- Scalable for large clusters
 
 ## System Requirements
 
-### Minimum
-- 2 CPU cores per node
-- 4GB RAM per node
-- Docker 20.10+
+- Python 3.7+
+- Docker and Docker Compose
+- Minimum 2 CPU cores per node
+- Minimum 4GB RAM per node
 
-### Recommended
-- 8+ CPU cores per node
-- 32GB+ RAM per node
-- SSD storage
+## Configuration Options
+
+- Cluster name and domain settings
+- Node count and roles
+- Hardware specifications
+- Elasticsearch version
+- X-Pack features
+- Network settings
+
+## Deployment
+
+### Development Mode Deployment
+
+1. **Extract and prepare files:**
+
+   ```bash
+   unzip elasticsearch-cluster-dev_*.zip
+   cd elasticsearch-cluster-dev/
+   ```
+
+2. **Make scripts executable:**
+
+   ```bash
+   chmod +x start.sh
+   ```
+
+3. **Start the cluster:**
+
+   ```bash
+   ./start.sh
+   ```
+
+   Or manually with Docker Compose:
+
+   ```bash
+   docker-compose up -d
+   ```
+
+4. **Verify cluster health:**
+   ```bash
+   curl http://localhost:9200/_cluster/health?pretty
+   curl http://localhost:9200/_cat/nodes?v
+   ```
+
+### Production Mode Deployment
+
+#### Option 1: Automated Cluster Deployment (Recommended)
+
+1. **Extract and prepare files:**
+
+   ```bash
+   unzip elasticsearch-cluster-prod_*.zip
+   cd elasticsearch-cluster-prod/
+   ```
+
+2. **Make all scripts executable:**
+
+   ```bash
+   chmod +x cluster-init.sh start-all.sh stop-all.sh
+   chmod +x nodes/*/run.sh
+   ```
+
+3. **Validate system requirements:**
+
+   ```bash
+   ./cluster-init.sh
+   ```
+
+4. **Start entire cluster:**
+   ```bash
+   ./start-all.sh
+   ```
+
+#### Option 2: Individual Node Deployment
+
+1. **Prepare and validate system:**
+
+   ```bash
+   ./cluster-init.sh
+   ```
+
+2. **Deploy nodes individually:**
+
+   ```bash
+   # Start first node
+   cd nodes/els01/
+   ./run.sh
+
+   # Start second node (in new terminal)
+   cd ../els02/
+   ./run.sh
+
+   # Continue for additional nodes...
+   ```
+
+#### Option 3: Manual Docker Compose
+
+1. **Navigate to each node directory:**
+
+   ```bash
+   cd nodes/els01/
+   docker-compose up -d
+
+   cd ../els02/
+   docker-compose up -d
+
+   # Repeat for all nodes...
+   ```
+
+### Post-Deployment Verification
+
+```bash
+# Check cluster health
+curl http://NODE_IP:9200/_cluster/health?pretty
+
+# List all nodes
+curl http://NODE_IP:9200/_cat/nodes?v
+
+# Check cluster settings
+curl http://NODE_IP:9200/_cluster/settings?pretty
+```
+
+### Management Commands
+
+```bash
+# Stop entire cluster (production mode)
+./stop-all.sh
+
+# Stop development cluster
+docker-compose down
+
+# View logs (development)
+docker-compose logs -f
+
+# View logs (production - specific node)
+cd nodes/els01/ && docker-compose logs -f
+```
 
 ## License
 
 This project is provided as-is for educational and production use.
-
-## Support
-
-For issues or questions, check the generated README.md file included with your cluster configuration for specific deployment guidance. 
